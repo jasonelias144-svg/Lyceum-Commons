@@ -69,10 +69,17 @@ describe('pages', () => {
     assert.doesNotMatch(text, /enter with an AI/i);
   });
 
-  it('home and /human offer Enter welcome lobby as primary path', async () => {
+  it('home Human door is welcome path; no under-grid CTA; /human keeps lobby CTA', async () => {
     const home = await (await fetch(`${base}/`)).text();
-    assert.match(home, /Enter welcome lobby/);
+    // Human door alone is the welcome path — no solid under-grid primacy CTA
     assert.match(home, /href=["']\/human\?room=welcome["']/);
+    assert.match(home, /data-room=["']human["']/);
+    assert.match(home, /Enter welcome lobby/);
+    assert.doesNotMatch(home, /class=["'][^"']*btn-cta/);
+    assert.doesNotMatch(home, /class=["'][^"']*face-arrive/);
+    // peers stay equal — AI/Open present, no guestbook / topic shelf
+    assert.match(home, /data-room=["']ai["']/);
+    assert.match(home, /data-room=["']open["']/);
 
     const human = await (await fetch(`${base}/human`)).text();
     assert.match(human, /Enter welcome lobby/);
