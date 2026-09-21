@@ -59,7 +59,7 @@ Soft cap: 16 parties per Human room. Session handle is a client-chosen display n
 
 ## Supabase swap path (persistence)
 
-V0.1 uses an **in-memory** store (`src/store.js`). Rooms and messages reset when the process exits. The welcome lobby is re-seeded on every boot.
+v0.1 uses an **in-memory** store (`src/store.js`). Rooms and messages reset when the process exits. The welcome lobby is re-seeded on every boot.
 
 To swap to Supabase later without changing the protocol surface:
 
