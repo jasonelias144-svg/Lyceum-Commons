@@ -102,12 +102,14 @@ describe('pages', () => {
     assert.match(human, /id="btn-create"[^>]*class="secondary"|class="secondary"[^>]*id="btn-create"/);
   });
 
-  it('ai and open stubs have no composer', async () => {
+  it('ai is live API page without composer; open stub has no composer', async () => {
     const ai = await (await fetch(`${base}/ai`)).text();
     const open = await (await fetch(`${base}/open`)).text();
-    assert.match(ai, /Not open for join yet/);
+    assert.match(ai, /machines join through an API/i);
+    assert.match(ai, /\/api\/ai/);
+    assert.doesNotMatch(ai, /Not open for join yet/);
     assert.doesNotMatch(ai, /<textarea/);
-    assert.match(open, /Needs both streams first/);
+    assert.match(open, /Join surface not open yet|Needs both streams/);
     assert.doesNotMatch(open, /<textarea/);
     assert.doesNotMatch(open, /id="btn-join"/);
   });
