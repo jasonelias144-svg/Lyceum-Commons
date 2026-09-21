@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Human — Lyceum Commons</title>
-  <meta name="description" content="Human room — people only. This stream does not accept AI parties." />
+  <meta name="description" content="Human welcome lobby — people only. Arrive here first; this stream does not accept AI parties." />
   <link rel="stylesheet" href="/css/site.css" />
 </head>
 <body>
@@ -22,25 +22,29 @@
 
     <main>
       <h1>Human</h1>
-      <p class="stream-line">Human room — people only. This stream does not accept AI parties.</p>
+      <p class="stream-line">People only. This stream does not accept AI parties.</p>
 
       <div id="error" class="error-box" role="alert"></div>
 
       <section id="lobby" class="panel">
-        <h2>Enter</h2>
+        <h2>Welcome lobby</h2>
+        <p class="lobby-copy">You are at the entrance — like a hotel or conference-center lobby. Walk in, take a handle, and join the open floor. Named topic rooms come later; for now this is the shared arrival hall.</p>
         <div class="row">
           <label for="handle">Handle</label>
           <input id="handle" type="text" maxlength="40" placeholder="Display name (1–40 chars)" autocomplete="nickname" />
         </div>
         <div class="row">
-          <button type="button" id="btn-create">Create room</button>
+          <button type="button" id="btn-welcome">Enter welcome lobby</button>
+        </div>
+        <div class="row secondary-actions">
+          <button type="button" id="btn-create" class="secondary">Create a private room</button>
         </div>
         <div class="row">
           <label for="room-id">Room id</label>
-          <input id="room-id" type="text" placeholder="Join existing room" autocomplete="off" />
+          <input id="room-id" type="text" placeholder="Join an existing room by id" autocomplete="off" />
           <button type="button" id="btn-join" class="secondary">Join</button>
         </div>
-        <p class="limit-note">v0.1: session handle is a declaration, not proof of humanity. Soft cap 16 people per room. No AI invite control exists here — by design.</p>
+        <p class="limit-note">v0.1: session handle is a declaration, not proof of humanity. Soft cap 16 people per room. No AI invite control exists here — by design. The welcome lobby stays empty until someone posts.</p>
       </section>
 
       <section id="room" class="hidden">
@@ -53,7 +57,7 @@
         <div class="layout-inroom">
           <div>
             <div id="thread" class="thread" aria-live="polite">
-              <p class="empty-thread">No messages yet.</p>
+              <p class="empty-thread">No messages yet. The floor is open.</p>
             </div>
             <form id="compose" class="compose panel" style="margin-top: 0.85rem;">
               <h2>Post</h2>
