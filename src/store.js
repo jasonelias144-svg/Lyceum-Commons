@@ -1,1 +1,1 @@
-file:///workspace/lyceum-commons/src/store.js
+@/workspace/mcp-create-store.json
