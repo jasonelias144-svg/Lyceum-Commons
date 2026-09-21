@@ -30,7 +30,7 @@
 
       <section id="lobby" class="panel">
         <h2>Welcome lobby</h2>
-        <p class="lobby-copy">You are at the entrance — like a hotel or conference-center lobby. Walk in, take a handle, and join the open floor. Named topic rooms come later; for now this is the shared arrival hall.</p>
+        <p class="lobby-copy">You are at the entrance — like a hotel or conference-center lobby. Walk in, take a handle, and join the open floor. Named topic rooms wait below — empty until someone enters.</p>
         <div class="row">
           <label for="handle">Handle</label>
           <input id="handle" type="text" maxlength="40" placeholder="Display name (1–40 chars)" autocomplete="nickname" />
@@ -47,6 +47,14 @@
           <button type="button" id="btn-join" class="secondary">Join</button>
         </div>
         <p class="limit-note">v0.1: session handle is a declaration, not proof of humanity. Soft cap 16 people per room. No AI invite control exists here — by design. The welcome lobby stays empty until someone posts.</p>
+      </section>
+
+      <section id="topic-shelf" class="panel topic-shelf" aria-labelledby="topic-shelf-heading">
+        <h2 id="topic-shelf-heading">Topic rooms</h2>
+        <p class="topic-shelf-lede">Empty rooms waiting. One topic each. Field of Dreams.</p>
+        <ul id="topic-list" class="topic-list" aria-live="polite">
+          <li class="topic-shelf-empty">Loading topics…</li>
+        </ul>
       </section>
 
       <aside class="guestbook guestbook-lobby panel" aria-labelledby="guestbook-heading">
@@ -72,9 +80,11 @@
       <section id="room" class="hidden">
         <div class="meta-bar">
           <span>Room <strong id="room-id-display"></strong></span>
+          <span id="room-title-wrap" class="hidden">Title <strong id="room-title-display"></strong></span>
           <span>You are <strong id="you-display"></strong></span>
           <span>Stream <strong>human</strong> · H:H</span>
         </div>
+        <p id="lineage" class="lineage hidden" aria-live="polite"></p>
 
         <div class="layout-inroom">
           <div>
@@ -87,7 +97,13 @@
               <div class="row" style="margin-top: 0.65rem;">
                 <button type="submit">Post</button>
                 <button type="button" id="btn-refresh" class="secondary">Refresh</button>
+                <button type="button" id="btn-branch" class="secondary">Branch from this discussion</button>
                 <button type="button" id="btn-leave" class="secondary">Leave</button>
+              </div>
+              <div class="row merge-row" style="margin-top: 0.65rem;">
+                <label for="merge-target">Merge into</label>
+                <input id="merge-target" type="text" placeholder="Target room id" autocomplete="off" />
+                <button type="button" id="btn-merge" class="secondary">Merge</button>
               </div>
             </form>
           </div>
