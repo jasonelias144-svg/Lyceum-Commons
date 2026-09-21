@@ -2,14 +2,19 @@
  * Lyceum Commons — Cycle A slice 1
  * Routes: / · /human (live) · /ai (stub) · /open (stub) · /docs/protocol
  * API: /api/human/* only (H:H). No /api/ai yet.
+ * Always-on Human welcome lobby (id: welcome) seeded on boot.
  */
 const path = require('path');
 const express = require('express');
 const humanApi = require('./humanApi');
+const store = require('./store');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const publicDir = path.join(__dirname, '..', 'public');
+
+// Always-on welcome lobby — hotel / conference-center arrival hall.
+store.ensureWelcomeLobby();
 
 app.use(express.json({ limit: '64kb' }));
 
@@ -44,6 +49,7 @@ app.use((err, _req, res, _next) => {
 if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Lyceum Commons listening on http://localhost:${PORT}`);
+    console.log(`Human welcome lobby: /human (room id ${store.WELCOME_ROOM_ID})`);
   });
 }
 
