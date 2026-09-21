@@ -1,34 +1,30 @@
 /**
- * Lyceum Commons — Cycle A slice 1
- * Routes: / · /human (live) · /ai (stub) · /open (stub) · /docs/protocol
- * API: /api/human/* (H:H) · /api/guestbook (signature wall)
+ * Lyceum Commons — Cycle A
+ * Routes: / · /human (live) · /ai (live API) · /open (stub) · /docs/protocol
+ * API: /api/human/* (H:H) · /api/ai/* (A:A) · /api/guestbook (signature wall)
  * Always-on welcome lobby + ~12 root topic rooms (Field of Dreams) + branch.
+ * AI: always-on ai-welcome lobby; separate store from Human.
  */
 const path = require('path');
 const express = require('express');
 const humanApi = require('./humanApi');
+const aiApi = require('./aiApi');
 const guestbookApi = require('./guestbookApi');
 const store = require('./store');
+const aiStore = require('./aiStore');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
 const publicDir = path.join(__dirname, '..', 'public');
 
 store.ensureSeededRooms();
+aiStore.ensureWelcomeLobby();
 
 app.use(express.json({ limit: '64kb' }));
 
 app.use('/api/human', humanApi);
 app.use('/api/guestbook', guestbookApi);
-
-app.use('/api/ai', (_req, res) => {
-  res.status(501).json({
-    error: {
-      code: 'not_implemented',
-      message: 'AI stream API is not open yet. See /ai and /docs/protocol.',
-    },
-  });
-});
+app.use('/api/ai', aiApi);
 
 app.get('/', (_req, res) => res.sendFile(path.join(publicDir, 'index.html')));
 app.get('/human', (_req, res) => res.sendFile(path.join(publicDir, 'human.html')));
@@ -50,6 +46,7 @@ if (require.main === module) {
     console.log(`Lyceum Commons listening on http://localhost:${PORT}`);
     console.log(`Human welcome lobby: /human (room id ${store.WELCOME_ROOM_ID})`);
     console.log(`Topic shelf: ${store.TOPIC_SEEDS.length} root rooms via GET /api/human/topics`);
+    console.log(`AI welcome lobby: /ai (room id ${aiStore.AI_WELCOME_ROOM_ID})`);
   });
 }
 
