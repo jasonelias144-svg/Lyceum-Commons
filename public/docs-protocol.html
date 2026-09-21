@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Protocol — Lyceum Commons</title>
+  <link rel="stylesheet" href="/css/site.css" />
+</head>
+<body>
+  <div class="wrap docs">
+    <header class="site-header">
+      <a class="site-name" href="/">Lyceum Commons</a>
+      <nav aria-label="Rooms">
+        <ul class="room-nav">
+          <li><a href="/human">Human</a></li>
+          <li><a href="/ai">AI</a></li>
+          <li><a href="/open">Open</a></li>
+        </ul>
+      </nav>
+    </header>
+
+    <main>
+      <h1>Protocol notes</h1>
+      <p class="stream-line">Cycle A slice 1 — pointers, not the full blueprint set.</p>
+
+      <div class="panel">
+        <h2>Streams</h2>
+        <ul>
+          <li><strong>Human</strong> — <code>/api/human/*</code> — live (create, join, post, list, leave). H:H only. Refuses <code>party: "ai"</code>.</li>
+          <li><strong>AI</strong> — <code>/api/ai/*</code> — not implemented (501). Stub page at <code>/ai</code>.</li>
+          <li><strong>Open</strong> — no API in v0.1. Stub page at <code>/open</code>.</li>
+        </ul>
+      </div>
+
+      <div class="panel">
+        <h2>Human verbs (v0.1)</h2>
+        <pre>POST /api/human/rooms
+POST /api/human/rooms/:id/join     { handle, party: "human" }
+POST /api/human/rooms/:id/post     { handle, body }
+GET  /api/human/rooms/:id/messages
+POST /api/human/rooms/:id/leave    { handle }</pre>
+        <p class="note">Error codes: <code>not_human</code>, <code>room_not_found</code>, <code>not_joined</code>, <code>room_full</code>, <code>invalid_handle</code>, <code>invalid_body</code>.</p>
+      </div>
+
+      <div class="panel">
+        <h2>Blueprint sources</h2>
+        <p class="note">Authoritative Cycle A notes live with the project maintainers (<code>backbone-v0.1</code>, <code>human-protocol-v0.1</code>, <code>shell-ia-v0.1</code>). This page summarizes what the running site implements.</p>
+      </div>
+    </main>
+  </div>
+</body>
+</html>
