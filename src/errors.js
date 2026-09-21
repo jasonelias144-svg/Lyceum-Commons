@@ -15,6 +15,10 @@ const CODES = {
     status: 400,
     message: 'Guest book signatures should not be bare URLs.',
   },
+  already_merged: { status: 409, message: 'This room was already merged into another.' },
+  cannot_merge_self: { status: 400, message: 'A room cannot merge into itself.' },
+  cannot_merge_welcome: { status: 400, message: 'The welcome lobby cannot be merged away.' },
+  room_merged: { status: 409, message: 'This room was merged; use the target room id.' },
 };
 
 function protocolError(code, detail) {
