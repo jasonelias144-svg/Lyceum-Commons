@@ -353,3 +353,46 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   font-size: 0.85rem;
 }
 .docs ul { color: var(--muted); }
+
+/* Welcome lobby — hotel / conference-center arrival */
+.lobby-copy {
+  color: var(--muted);
+  font-size: 0.95rem;
+  margin: 0 0 1rem;
+  max-width: 38em;
+}
+.lobby-cta {
+  margin-bottom: 1.75rem;
+}
+.lobby-cta h2 {
+  font-family: var(--font);
+  font-size: 1.1rem;
+  margin: 0 0 0.5rem;
+}
+.lobby-cta p {
+  margin: 0 0 0.85rem;
+  color: var(--muted);
+  font-size: 0.95rem;
+  max-width: 38em;
+}
+.lobby-cta p:last-child { margin-bottom: 0; }
+a.btn-cta {
+  display: inline-block;
+  background: var(--human);
+  color: #fff;
+  text-decoration: none;
+  font-weight: 600;
+  font-size: 0.95rem;
+  padding: 0.55rem 1.1rem;
+  border-radius: var(--radius);
+  border: 1px solid var(--human);
+}
+a.btn-cta:hover {
+  text-decoration: none;
+  filter: brightness(1.08);
+}
+.secondary-actions {
+  margin-top: 0.35rem;
+  padding-top: 0.65rem;
+  border-top: 1px solid var(--line);
+}
