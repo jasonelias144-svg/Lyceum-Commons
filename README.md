@@ -9,15 +9,17 @@ Human and AI are separate streams. Open is where those streams will meet — not
 | Route / API | State |
 |-------------|--------|
 | `/` | Live — thin face, open atrium air, three peer doors (Human → welcome lobby), quiet guest book |
-| `/human` | **Live** — always-on welcome lobby; create / join / post / list / leave; same-floor guest book |
-| `/api/human/*` | **Live** — H:H only; refuses AI parties (`not_human`) |
+| `/human` | **Live** — welcome lobby + topic shelf + branch/merge; create / join / post / list / leave; guest book |
+| `/api/human/*` | **Live** — H:H only; `GET /topics`; branch + thin merge; refuses AI (`not_human`) |
 | `/api/guestbook` | **Live** — public signature wall (≤50 chars); newest first; human-facing |
 | `/ai` | Stub — honest hold, no fake composer |
 | `/open` | Stub — needs both streams; no join/composer |
 | `/docs/protocol` | Live — short pointers |
 | `/api/ai/*` | Not implemented (501) |
 
-**Default open chat:** the Human **welcome lobby** (`room id: welcome`). Seeded on server boot — empty until someone joins (Field of Dreams). Treat it as the arrival hall of a hotel or conference center: walk in without creating a room first. Named topic rooms come later; this slice is lobby only.
+**Default open chat:** the Human **welcome lobby** (`room id: welcome`). Seeded on server boot — empty until someone joins (Field of Dreams). Treat it as the arrival hall of a hotel or conference center: walk in without creating a room first.
+
+**Topic shelf (Field of Dreams):** twelve root Human rooms seed on boot (Interconnectivity, Protocols, Naming, Building, Questions, Human stream, AI stream, Open composition, Design / face, Commons & funding, Learning, Field notes). Listed on `/human` only (not on `/` — topics are not stream doors). Each root starts with **one** Host orientation message (opening questions); roster stays empty until a stranger joins. **Branch:** `POST /api/human/rooms/:id/branch` creates a child with `parent_id` (Host line “Branched from …”). **Merge (thin):** `POST /api/human/rooms/:id/merge` with `{ target_id }` moves messages chronologically into the target and sets `merged_into` on the source (welcome cannot be merged away). No fake guests, no fabricated back-and-forth. Welcome lobby stays message-empty (UI lobby copy).
 
 **Proof this slice serves:** a stranger can open the live site and enter chat without a create step; only Open will join streams later; people are not collapsed with machines into one chat. Human works without AI or Open.
 
@@ -40,17 +42,24 @@ Open [http://localhost:3000](http://localhost:3000). Choose the Human door on ho
 npm test
 ```
 
-Covers welcome lobby after boot, Human verbs (join / post / list / leave on the lobby and create-room path), refusal of AI/machine parties on the Human API, and the guest book (create / list / cap / empty / newest-first).
+Covers welcome lobby after boot, twelve root topics with Host orientation, branch (`parent_id`), thin merge (`merged_into`), Human verbs, AI refusal, and the guest book.
 
 ## Human API (v0.1)
 
 ```
+GET  /api/human/topics                  # root topic rooms (excludes welcome)
 POST /api/human/rooms
-POST /api/human/rooms/:id/join     { "handle": "…", "party": "human" }
-POST /api/human/rooms/:id/post     { "handle": "…", "body": "…" }
+POST /api/human/rooms/:id/join          { "handle": "…", "party": "human" }
+POST /api/human/rooms/:id/post          { "handle": "…", "body": "…" }
 GET  /api/human/rooms/:id/messages
-POST /api/human/rooms/:id/leave    { "handle": "…" }
+POST /api/human/rooms/:id/leave         { "handle": "…" }
+POST /api/human/rooms/:id/branch        { "handle": "…", "party": "human", "title"? }
+POST /api/human/rooms/:id/merge         { "handle": "…", "party": "human", "target_id": "…" }
 ```
+
+`GET /topics` returns `{ "topics": [ { "id", "title", "roster_count", "message_count", "parent_id", "merged_into" }, … ] }` — the twelve root topic rooms only (not welcome, not branches).
+
+Room payloads also carry `title`, `parent_id`, and `merged_into` for lineage. Branch creates a child room; merge moves messages into a target and archives the source via `merged_into`.
 
 Stable room id for the always-on lobby: **`welcome`**.
 
@@ -73,7 +82,7 @@ Refuses empty / over-cap bodies (`invalid_signature`), invalid handles (`invalid
 
 ## Supabase swap path (persistence)
 
-V0.1 uses an **in-memory** store (`src/store.js`). Rooms, messages, and guest book signatures reset when the process exits. The welcome lobby is re-seeded on every boot; the guest book starts empty.
+V0.1 uses an **in-memory** store (`src/store.js`). Rooms, messages, and guest book signatures reset when the process exits. The welcome lobby and starter topic rooms are re-seeded on every boot (and after `clearAll`); the guest book starts empty.
 
 To swap to Supabase later without changing the protocol surface:
 
@@ -82,7 +91,7 @@ To swap to Supabase later without changing the protocol surface:
    - `human_rooms (id text primary key, stream text, created_at timestamptz)`
    - `human_roster (room_id text, handle text, joined_at timestamptz, primary key (room_id, handle))`
    - `human_messages (id text primary key, room_id text, author text, party text, body text, created_at timestamptz)`
-3. Replace the Map-backed helpers in `src/store.js` with Supabase queries that keep the same function names (`createRoom`, `ensureWelcomeLobby`, `getRoom`, `listRoster`, …). Persist room `welcome` as a fixed row.
+3. Replace the Map-backed helpers in `src/store.js` with Supabase queries that keep the same function names (`createRoom`, `ensureWelcomeLobby`, `ensureSeededRooms`, `listTopics`, `getRoom`, `listRoster`, …). Persist room `welcome` and the five `topic-*` rows as fixed ids; rooms may carry a `title` field.
 4. Keep `/api/human` routes and error codes unchanged so the `/human` UI and any thin client keep working.
 5. Do **not** put AI messages in Human tables — separate schemas/namespaces when `/api/ai` lands.
 
