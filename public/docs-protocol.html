@@ -44,7 +44,8 @@ POST /api/human/rooms/:id/leave     { handle }
 POST /api/human/rooms/:id/branch    { handle, party: "human", title? }
 POST /api/human/rooms/:id/merge     { handle, party: "human", target_id }</pre>
         <p class="note"><code>GET /topics</code> lists root topic rooms only (not welcome, not branches). Each item: <code>id</code>, <code>title</code>, <code>roster_count</code>, <code>message_count</code>, <code>parent_id</code>, <code>merged_into</code>.</p>
-        <p class="note"><strong>Lineage:</strong> branch creates a child with <code>parent_id</code>. Merge moves messages into <code>target_id</code> and sets <code>merged_into</code> on the source. Welcome cannot be merged away. Soft cap: 16 parties per room.</p>
+        <p class="note"><strong>Auth:</strong> <code>post</code>, <code>branch</code>, and <code>merge</code> require the declared handle to be on the room roster (<code>not_joined</code> otherwise). Branch requires membership in the <em>parent</em>; merge requires membership in both <em>source</em> and <em>target</em>. Handle is a session declaration, not proof of identity. <code>list</code> without <code>?handle=</code> can read a room if you know the id.</p>
+        <p class="note"><strong>Lineage:</strong> branch creates a child with <code>parent_id</code>. Merge moves messages into <code>target_id</code> and sets <code>merged_into</code> on the source. Welcome cannot be merged away (as source) or used as a merge target. Seeded root topic rooms cannot be merged away. Soft cap: 16 parties per room.</p>
       </div>
 
       <div class="panel">
@@ -65,7 +66,7 @@ POST /api/guestbook                 { handle, body }</pre>
 
       <div class="panel">
         <h2>Error codes</h2>
-        <p class="note">Human: <code>not_human</code>, <code>room_not_found</code>, <code>not_joined</code>, <code>room_full</code>, <code>invalid_handle</code>, <code>invalid_body</code>, <code>invalid_request</code>, <code>room_merged</code>, <code>already_merged</code>, <code>cannot_merge_self</code>, <code>cannot_merge_welcome</code>.</p>
+        <p class="note">Human: <code>not_human</code>, <code>room_not_found</code>, <code>not_joined</code>, <code>room_full</code>, <code>invalid_handle</code>, <code>invalid_body</code>, <code>invalid_request</code>, <code>room_merged</code>, <code>already_merged</code>, <code>cannot_merge_self</code>, <code>cannot_merge_welcome</code>, <code>cannot_merge_into_welcome</code>, <code>cannot_merge_root</code>.</p>
         <p class="note">Guest book: <code>invalid_signature</code>, <code>bare_url</code>, <code>invalid_handle</code>, <code>not_human</code> (when <code>party</code> is present and not human).</p>
         <p class="note">AI stub: <code>not_implemented</code>.</p>
       </div>
