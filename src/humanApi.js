@@ -1,6 +1,11 @@
 /**
  * Human stream API — /api/human/*
  * H:H only. Refuses party:"ai" and any non-human claim (not_human).
+ *
+ * Seeded topic shelf: GET /topics lists root topic rooms (excludes welcome).
+ * Branch: POST /rooms/:id/branch creates a child with parent_id.
+ * Merge: POST /rooms/:id/merge { target_id } moves messages; sets merged_into.
+ * Join/post/list/leave reuse rooms/:id/*.
  */
 const express = require('express');
 const store = require('./store');
@@ -12,7 +17,6 @@ const HANDLE_RE = /^[^\x00-\x1f\x7f]{1,40}$/;
 
 function assertHumanParty(party) {
   if (party === undefined || party === null) {
-    // join requires explicit party declaration
     throw protocolError('invalid_request', 'party must be declared as "human".');
   }
   if (party !== 'human') {
@@ -44,18 +48,42 @@ function requireRoom(id) {
   return room;
 }
 
-/** POST /api/human/rooms → create */
+function roomMeta(room) {
+  return {
+    room_id: room.id,
+    title: room.title || null,
+    parent_id: room.parent_id ?? null,
+    merged_into: room.merged_into ?? null,
+    stream: room.stream,
+    participants: room.participants,
+  };
+}
+
+function assertNotMerged(room) {
+  if (room.merged_into) {
+    throw protocolError(
+      'room_merged',
+      `This room was merged into ${room.merged_into}. Join that room instead.`
+    );
+  }
+}
+
+router.get('/topics', (_req, res) => {
+  try {
+    res.json({ topics: store.listTopics() });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 router.post('/rooms', (req, res) => {
   try {
-    // Refuse AI create attempts if someone sends party on create
     if (req.body && req.body.party !== undefined && req.body.party !== 'human') {
       throw protocolError('not_human');
     }
     const room = store.createRoom();
     res.status(201).json({
-      room_id: room.id,
-      stream: room.stream,
-      participants: room.participants,
+      ...roomMeta(room),
       created_at: room.created_at,
     });
   } catch (err) {
@@ -63,34 +91,83 @@ router.post('/rooms', (req, res) => {
   }
 });
 
-/** POST /api/human/rooms/:id/join */
-router.post('/rooms/:id/join', (req, res) => {
+router.post('/rooms/:id/branch', (req, res) => {
   try {
-    const room = requireRoom(req.params.id);
-    const { handle: rawHandle, party } = req.body || {};
+    const parent = requireRoom(req.params.id);
+    const { handle: rawHandle, party, title } = req.body || {};
     assertHumanParty(party);
     const handle = validateHandle(rawHandle);
-
-    if (room.roster.has(handle)) {
-      // idempotent re-join
-      return res.json({ room_id: room.id, roster: store.listRoster(room) });
-    }
-    if (room.roster.size >= store.MAX_PARTIES) {
-      throw protocolError('room_full');
-    }
+    const room = store.branchRoom(parent, { title });
     room.roster.set(handle, { handle, joined_at: new Date().toISOString() });
-    res.json({ room_id: room.id, roster: store.listRoster(room) });
+    res.status(201).json({
+      ...roomMeta(room),
+      created_at: room.created_at,
+      roster: store.listRoster(room),
+    });
   } catch (err) {
     sendError(res, err);
   }
 });
 
-/** POST /api/human/rooms/:id/post */
+router.post('/rooms/:id/merge', (req, res) => {
+  try {
+    const source = requireRoom(req.params.id);
+    const { handle: rawHandle, party, target_id: targetId } = req.body || {};
+    assertHumanParty(party);
+    validateHandle(rawHandle);
+    if (typeof targetId !== 'string' || !targetId.trim()) {
+      throw protocolError('invalid_request', 'target_id is required.');
+    }
+    const target = requireRoom(targetId.trim());
+    assertNotMerged(source);
+    const result = store.mergeRooms(source, target);
+    res.json({
+      ok: true,
+      moved: result.moved,
+      source: roomMeta(result.source),
+      target: roomMeta(result.target),
+    });
+  } catch (err) {
+    if (err.code && !err.status) {
+      const mapped = protocolError(err.code);
+      return sendError(res, mapped);
+    }
+    sendError(res, err);
+  }
+});
+
+router.post('/rooms/:id/join', (req, res) => {
+  try {
+    const room = requireRoom(req.params.id);
+    assertNotMerged(room);
+    const { handle: rawHandle, party } = req.body || {};
+    assertHumanParty(party);
+    const handle = validateHandle(rawHandle);
+
+    if (room.roster.has(handle)) {
+      return res.json({
+        ...roomMeta(room),
+        roster: store.listRoster(room),
+      });
+    }
+    if (room.roster.size >= store.MAX_PARTIES) {
+      throw protocolError('room_full');
+    }
+    room.roster.set(handle, { handle, joined_at: new Date().toISOString() });
+    res.json({
+      ...roomMeta(room),
+      roster: store.listRoster(room),
+    });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 router.post('/rooms/:id/post', (req, res) => {
   try {
     const room = requireRoom(req.params.id);
+    assertNotMerged(room);
     const { handle: rawHandle, body: rawBody, party } = req.body || {};
-    // Refuse AI posts even if somehow joined
     if (party !== undefined && party !== 'human') {
       throw protocolError('not_human');
     }
@@ -115,11 +192,9 @@ router.post('/rooms/:id/post', (req, res) => {
   }
 });
 
-/** GET /api/human/rooms/:id/messages — list (poll) */
 router.get('/rooms/:id/messages', (req, res) => {
   try {
     const room = requireRoom(req.params.id);
-    // Optional membership gate via ?handle= — if provided, must be joined
     const handle = req.query.handle;
     if (handle !== undefined) {
       if (!room.roster.has(String(handle))) {
@@ -133,8 +208,7 @@ router.get('/rooms/:id/messages', (req, res) => {
       messages = idx >= 0 ? messages.slice(idx + 1) : messages;
     }
     res.json({
-      room_id: room.id,
-      stream: 'human',
+      ...roomMeta(room),
       messages,
       roster: store.listRoster(room),
     });
@@ -143,7 +217,6 @@ router.get('/rooms/:id/messages', (req, res) => {
   }
 });
 
-/** POST /api/human/rooms/:id/leave */
 router.post('/rooms/:id/leave', (req, res) => {
   try {
     const room = requireRoom(req.params.id);
@@ -152,9 +225,12 @@ router.post('/rooms/:id/leave', (req, res) => {
       throw protocolError('not_human');
     }
     const handle = validateHandle(rawHandle);
-    // leave if absent: no-op
     room.roster.delete(handle);
-    res.json({ ok: true, room_id: room.id, roster: store.listRoster(room) });
+    res.json({
+      ok: true,
+      ...roomMeta(room),
+      roster: store.listRoster(room),
+    });
   } catch (err) {
     sendError(res, err);
   }

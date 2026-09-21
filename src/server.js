@@ -2,7 +2,7 @@
  * Lyceum Commons — Cycle A slice 1
  * Routes: / · /human (live) · /ai (stub) · /open (stub) · /docs/protocol
  * API: /api/human/* (H:H) · /api/guestbook (signature wall)
- * Always-on Human welcome lobby (id: welcome) seeded on boot.
+ * Always-on welcome lobby + ~12 root topic rooms (Field of Dreams) + branch.
  */
 const path = require('path');
 const express = require('express');
@@ -14,18 +14,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const publicDir = path.join(__dirname, '..', 'public');
 
-// Always-on welcome lobby — hotel / conference-center arrival hall.
-store.ensureWelcomeLobby();
+store.ensureSeededRooms();
 
 app.use(express.json({ limit: '64kb' }));
 
-// Human API — separate namespace; never shared with AI
 app.use('/api/human', humanApi);
-
-// Guest book — short public signature wall (not a chat thread)
 app.use('/api/guestbook', guestbookApi);
 
-// Honest 404 for any premature /api/ai
 app.use('/api/ai', (_req, res) => {
   res.status(501).json({
     error: {
@@ -54,6 +49,7 @@ if (require.main === module) {
   app.listen(PORT, () => {
     console.log(`Lyceum Commons listening on http://localhost:${PORT}`);
     console.log(`Human welcome lobby: /human (room id ${store.WELCOME_ROOM_ID})`);
+    console.log(`Topic shelf: ${store.TOPIC_SEEDS.length} root rooms via GET /api/human/topics`);
   });
 }
 
