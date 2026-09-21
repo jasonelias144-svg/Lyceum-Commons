@@ -5,6 +5,8 @@
  * Seeded topic shelf: GET /topics lists root topic rooms (excludes welcome).
  * Branch: POST /rooms/:id/branch creates a child with parent_id.
  * Merge: POST /rooms/:id/merge { target_id } moves messages; sets merged_into.
+ * Branch/merge require the actor on the parent/source (and merge target) roster.
+ * Seeded roots and welcome cannot be merge sources; welcome cannot be a merge target.
  * Join/post/list/leave reuse rooms/:id/*.
  */
 const express = require('express');
@@ -94,9 +96,13 @@ router.post('/rooms', (req, res) => {
 router.post('/rooms/:id/branch', (req, res) => {
   try {
     const parent = requireRoom(req.params.id);
+    assertNotMerged(parent);
     const { handle: rawHandle, party, title } = req.body || {};
     assertHumanParty(party);
     const handle = validateHandle(rawHandle);
+    if (!parent.roster.has(handle)) {
+      throw protocolError('not_joined');
+    }
     const room = store.branchRoom(parent, { title });
     room.roster.set(handle, { handle, joined_at: new Date().toISOString() });
     res.status(201).json({
@@ -114,12 +120,19 @@ router.post('/rooms/:id/merge', (req, res) => {
     const source = requireRoom(req.params.id);
     const { handle: rawHandle, party, target_id: targetId } = req.body || {};
     assertHumanParty(party);
-    validateHandle(rawHandle);
+    const handle = validateHandle(rawHandle);
     if (typeof targetId !== 'string' || !targetId.trim()) {
       throw protocolError('invalid_request', 'target_id is required.');
     }
     const target = requireRoom(targetId.trim());
     assertNotMerged(source);
+    store.assertMergeAllowed(source, target);
+    if (!source.roster.has(handle)) {
+      throw protocolError('not_joined');
+    }
+    if (!target.roster.has(handle)) {
+      throw protocolError('not_joined');
+    }
     const result = store.mergeRooms(source, target);
     res.json({
       ok: true,
