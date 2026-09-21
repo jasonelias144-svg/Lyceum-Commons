@@ -1,14 +1,16 @@
 /* Lyceum Commons — serious, restrained shell. No shop chrome. */
 :root {
-  --bg: #f7f6f2;
-  --ink: #1a1a1a;
-  --muted: #5a5a5a;
-  --line: #d4d0c8;
+  --bg: #fffcf7;
+  --bg-shade: #f3efe6;
+  --sun: rgba(232, 196, 140, 0.28);
+  --ink: #1c1b19;
+  --muted: #5c5850;
+  --line: #ddd6c8;
   --card: #ffffff;
   --human: #2c4a3e;
   --ai: #3a3f5c;
   --open: #5c4a2e;
-  --focus: #1a1a1a;
+  --focus: #1c1b19;
   --danger: #8b2e2e;
   --ok: #2c4a3e;
   --radius: 6px;
@@ -22,7 +24,9 @@ html { font-size: 18px; }
 body {
   margin: 0;
   min-height: 100vh;
-  background: var(--bg);
+  background:
+    radial-gradient(ellipse 70% 55% at 50% 28%, var(--sun) 0%, transparent 62%),
+    linear-gradient(180deg, #fffefb 0%, var(--bg) 42%, var(--bg-shade) 100%);
   color: var(--ink);
   font-family: var(--sans);
   line-height: 1.5;
@@ -294,7 +298,7 @@ button:focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
   border: 1px solid var(--line);
   border-radius: var(--radius);
   padding: 0.75rem;
-  background: #fafaf8;
+  background: #faf8f3;
 }
 .msg {
   margin-bottom: 0.85rem;
@@ -395,4 +399,85 @@ a.btn-cta:hover {
   margin-top: 0.35rem;
   padding-top: 0.65rem;
   border-top: 1px solid var(--line);
+}
+
+/* ——— Front door face: open atrium, lower φ band ——— */
+body.face {
+  min-height: 100vh;
+  min-height: 100dvh;
+}
+.atrium {
+  min-height: 100vh;
+  min-height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  max-width: 48rem;
+  margin: 0 auto;
+  padding: 0 1.25rem;
+}
+.atrium-air {
+  flex: 1 1 auto;
+  min-height: calc((1 - 0.618) * 100vh);
+  min-height: calc((1 - 0.618) * 100dvh);
+  pointer-events: none;
+}
+.atrium-band {
+  flex: 0 0 auto;
+  padding: 0 0 calc(1.25rem + env(safe-area-inset-bottom, 0px));
+  /* lower band ≈ 1/φ of viewport — content sits here */
+  max-height: none;
+}
+.face-title {
+  font-family: var(--font);
+  font-size: clamp(1.65rem, 3.2vw, 2.05rem);
+  font-weight: 600;
+  margin: 0 0 0.55rem;
+  letter-spacing: -0.015em;
+  color: var(--ink);
+}
+.welcome-line {
+  font-size: 1.05rem;
+  line-height: 1.55;
+  max-width: 34em;
+  margin: 0 0 1.35rem;
+  color: var(--muted);
+}
+.face-doors {
+  margin: 0 0 1.25rem;
+}
+body.face .door {
+  background: rgba(255, 255, 255, 0.72);
+  border-color: rgba(28, 27, 25, 0.12);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.7), 0 8px 24px rgba(60, 48, 28, 0.05);
+  min-height: 8.5rem;
+  backdrop-filter: blur(2px);
+}
+body.face .door:hover {
+  border-color: rgba(28, 27, 25, 0.35);
+  background: rgba(255, 255, 255, 0.9);
+}
+body.face .door[data-room="human"] .door-state {
+  text-transform: none;
+  letter-spacing: 0.02em;
+  font-size: 0.8rem;
+}
+.face-arrive {
+  margin: 0 0 0.5rem;
+}
+.face-arrive .btn-cta {
+  background: var(--ink);
+  border-color: var(--ink);
+  color: #fffefb;
+}
+.face-arrive .btn-cta:hover {
+  filter: none;
+  background: #2a2824;
+  border-color: #2a2824;
+}
+@media (max-width: 720px) {
+  .atrium-air {
+    min-height: 18vh;
+    min-height: 18dvh;
+  }
+  body.face .door { min-height: 0; }
 }
