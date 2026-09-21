@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Human — Lyceum Commons</title>
   <meta name="description" content="Human welcome lobby — people only. Arrive here first; this stream does not accept AI parties." />
+  <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="/css/site.css" />
 </head>
 <body>
@@ -47,6 +48,26 @@
         <p class="limit-note">v0.1: session handle is a declaration, not proof of humanity. Soft cap 16 people per room. No AI invite control exists here — by design. The welcome lobby stays empty until someone posts.</p>
       </section>
 
+      <aside class="guestbook guestbook-lobby panel" aria-labelledby="guestbook-heading">
+        <h2 id="guestbook-heading" class="guestbook-title">Guest book</h2>
+        <p class="guestbook-lede">A short signature wall on the floor — not the room thread. Leave a handle and a note (≤50 characters).</p>
+        <div id="guestbook-list" class="guestbook-list" aria-live="polite">
+          <p class="guestbook-empty">Be the first to sign</p>
+        </div>
+        <form id="guestbook-form" class="guestbook-form">
+          <p class="guestbook-cta">Sign the guest book</p>
+          <div class="guestbook-fields">
+            <label class="visually-hidden" for="gb-handle">Handle</label>
+            <input id="gb-handle" name="handle" type="text" maxlength="40" placeholder="Handle" autocomplete="nickname" required />
+            <label class="visually-hidden" for="gb-body">Signature</label>
+            <input id="gb-body" name="body" type="text" maxlength="50" placeholder="Your note (≤50 characters)" autocomplete="off" required />
+            <span id="gb-count" class="guestbook-count" aria-hidden="true">0/50</span>
+            <button type="submit">Sign</button>
+          </div>
+          <p id="guestbook-status" class="guestbook-status" hidden></p>
+        </form>
+      </aside>
+
       <section id="room" class="hidden">
         <div class="meta-bar">
           <span>Room <strong id="room-id-display"></strong></span>
@@ -78,5 +99,6 @@
     </main>
   </div>
   <script src="/js/human.js"></script>
+  <script src="/js/guestbook.js"></script>
 </body>
 </html>
