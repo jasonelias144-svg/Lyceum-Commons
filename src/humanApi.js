@@ -8,6 +8,7 @@
  * Branch/merge require the actor on the parent/source (and merge target) roster.
  * Seeded roots and welcome cannot be merge sources; welcome cannot be a merge target.
  * Join/post/list/leave reuse rooms/:id/*.
+ * Room format live|board sets post body caps (200 / 4000); fixed at create/seed.
  */
 const express = require('express');
 const store = require('./store');
@@ -33,13 +34,19 @@ function validateHandle(handle) {
   return handle.trim();
 }
 
-function validateBody(body) {
+function validateBody(body, { format } = {}) {
   if (typeof body !== 'string') {
     throw protocolError('invalid_body');
   }
   const trimmed = body.trim();
-  if (trimmed.length < 1 || body.length > 4000) {
-    throw protocolError('invalid_body');
+  const fmt = store.normalizeFormat(format, store.FORMAT_BOARD);
+  const max = store.bodyCapForFormat(fmt);
+  if (trimmed.length < 1 || body.length > max) {
+    const detail =
+      fmt === store.FORMAT_LIVE
+        ? 'Live rooms take up to 200 characters.'
+        : 'Board rooms take up to 4000 characters.';
+    throw protocolError('invalid_body', detail);
   }
   return body;
 }
@@ -58,6 +65,7 @@ function roomMeta(room) {
     merged_into: room.merged_into ?? null,
     stream: room.stream,
     participants: room.participants,
+    format: store.normalizeFormat(room.format, store.FORMAT_BOARD),
   };
 }
 
@@ -83,7 +91,14 @@ router.post('/rooms', (req, res) => {
     if (req.body && req.body.party !== undefined && req.body.party !== 'human') {
       throw protocolError('not_human');
     }
-    const room = store.createRoom();
+    let format = store.FORMAT_BOARD;
+    if (req.body && req.body.format !== undefined) {
+      if (req.body.format !== store.FORMAT_LIVE && req.body.format !== store.FORMAT_BOARD) {
+        throw protocolError('invalid_request', 'format must be "live" or "board".');
+      }
+      format = req.body.format;
+    }
+    const room = store.createRoom({ format });
     res.status(201).json({
       ...roomMeta(room),
       created_at: room.created_at,
@@ -188,7 +203,7 @@ router.post('/rooms/:id/post', (req, res) => {
     if (!room.roster.has(handle)) {
       throw protocolError('not_joined');
     }
-    const body = validateBody(rawBody);
+    const body = validateBody(rawBody, { format: room.format });
     const crypto = require('crypto');
     const message = {
       id: `msg_${crypto.randomBytes(6).toString('hex')}`,
