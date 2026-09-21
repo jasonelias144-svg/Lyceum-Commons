@@ -206,6 +206,157 @@ describe('Topic shelf', () => {
     assert.equal(store.getRoom('welcome').messages.length, 0);
   });
 
+
+  it('QC1: branch without parent membership → not_joined', async () => {
+    const bad = await json('POST', '/api/human/rooms/topic-building/branch', {
+      handle: 'outsider-merge',
+      party: 'human',
+      title: 'unauthorized branch?',
+    });
+    assert.equal(bad.status, 403);
+    assert.equal(bad.data.error.code, 'not_joined');
+  });
+
+  it('QC2: merge without source/target membership → not_joined', async () => {
+    const parentId = 'topic-learning';
+    await json('POST', `/api/human/rooms/${parentId}/join`, {
+      handle: 'gatekeeper',
+      party: 'human',
+    });
+    const branch = await json('POST', `/api/human/rooms/${parentId}/branch`, {
+      handle: 'gatekeeper',
+      party: 'human',
+      title: 'merge-probe',
+    });
+    assert.equal(branch.status, 201);
+    const childId = branch.data.room_id;
+
+    const bad = await json('POST', `/api/human/rooms/${childId}/merge`, {
+      handle: 'never-joined',
+      party: 'human',
+      target_id: parentId,
+    });
+    assert.equal(bad.status, 403);
+    assert.equal(bad.data.error.code, 'not_joined');
+  });
+
+  it('QC3: seeded root topic cannot be merged away', async () => {
+    const rootId = 'topic-field-notes';
+    const target = await json('POST', '/api/human/rooms', {});
+    const targetId = target.data.room_id;
+    await json('POST', `/api/human/rooms/${rootId}/join`, {
+      handle: 'Sam',
+      party: 'human',
+    });
+    await json('POST', `/api/human/rooms/${targetId}/join`, {
+      handle: 'Sam',
+      party: 'human',
+    });
+    const bad = await json('POST', `/api/human/rooms/${rootId}/merge`, {
+      handle: 'Sam',
+      party: 'human',
+      target_id: targetId,
+    });
+    assert.equal(bad.status, 400);
+    assert.equal(bad.data.error.code, 'cannot_merge_root');
+    assert.equal(store.getRoom(rootId).merged_into, null);
+  });
+
+  it('QC4: merge into welcome refused', async () => {
+    const parentId = 'topic-questions';
+    await json('POST', `/api/human/rooms/${parentId}/join`, {
+      handle: 'Sam',
+      party: 'human',
+    });
+    const branch = await json('POST', `/api/human/rooms/${parentId}/branch`, {
+      handle: 'Sam',
+      party: 'human',
+      title: 'into-welcome',
+    });
+    const childId = branch.data.room_id;
+    await json('POST', '/api/human/rooms/welcome/join', {
+      handle: 'Sam',
+      party: 'human',
+    });
+    const bad = await json('POST', `/api/human/rooms/${childId}/merge`, {
+      handle: 'Sam',
+      party: 'human',
+      target_id: 'welcome',
+    });
+    assert.equal(bad.status, 400);
+    assert.equal(bad.data.error.code, 'cannot_merge_into_welcome');
+    assert.equal(store.getRoom('welcome').messages.length, 0);
+  });
+
+  it('QC5: Host merge notices get unique ids; after= works', async () => {
+    async function makeChild(title) {
+      const a = await json('POST', '/api/human/rooms', {});
+      const b = await json('POST', '/api/human/rooms', {});
+      const sourceId = a.data.room_id;
+      const targetId = b.data.room_id;
+      await json('POST', `/api/human/rooms/${sourceId}/join`, {
+        handle: 'Sam',
+        party: 'human',
+      });
+      await json('POST', `/api/human/rooms/${targetId}/join`, {
+        handle: 'Sam',
+        party: 'human',
+      });
+      await json('POST', `/api/human/rooms/${sourceId}/post`, {
+        handle: 'Sam',
+        body: title,
+        party: 'human',
+      });
+      const merge = await json('POST', `/api/human/rooms/${sourceId}/merge`, {
+        handle: 'Sam',
+        party: 'human',
+        target_id: targetId,
+      });
+      assert.equal(merge.status, 200);
+      return targetId;
+    }
+
+    const t1 = await makeChild('note-one');
+    // second source into same target
+    const extra = await json('POST', '/api/human/rooms', {});
+    const sourceId = extra.data.room_id;
+    await json('POST', `/api/human/rooms/${sourceId}/join`, {
+      handle: 'Sam',
+      party: 'human',
+    });
+    await json('POST', `/api/human/rooms/${t1}/join`, {
+      handle: 'Sam',
+      party: 'human',
+    });
+    await json('POST', `/api/human/rooms/${sourceId}/post`, {
+      handle: 'Sam',
+      body: 'note-two',
+      party: 'human',
+    });
+    const merge2 = await json('POST', `/api/human/rooms/${sourceId}/merge`, {
+      handle: 'Sam',
+      party: 'human',
+      target_id: t1,
+    });
+    assert.equal(merge2.status, 200);
+
+    const list = await json('GET', `/api/human/rooms/${t1}/messages`);
+    const ids = list.data.messages.map((m) => m.id);
+    assert.equal(ids.length, new Set(ids).size, `duplicate ids: ${ids}`);
+    const hostNotices = list.data.messages.filter(
+      (m) => m.author === 'Host' && /Merged in discussion/.test(m.body)
+    );
+    assert.ok(hostNotices.length >= 2);
+    assert.notEqual(hostNotices[0].id, hostNotices[1].id);
+
+    const after = await json(
+      'GET',
+      `/api/human/rooms/${t1}/messages?after=${encodeURIComponent(hostNotices[0].id)}`
+    );
+    assert.equal(after.status, 200);
+    assert.ok(after.data.messages.some((m) => m.id === hostNotices[1].id));
+  });
+
   it('/human has topic shelf; home does not', async () => {
     const human = await (await fetch(`${base}/human`)).text();
     assert.match(human, /Topic rooms/);
