@@ -1,0 +1,13 @@
+/* Human room format faces — live ticker vs board thread (soft craft) */
+#room[data-format="live"] .thread-live{min-height:11rem;max-height:18rem;background:linear-gradient(180deg,#f7f5f0 0%,#faf8f3 100%);padding:0.55rem 0.65rem}
+#room[data-format="live"] .msg-live{margin-bottom:0.45rem;padding:0.4rem 0.45rem 0.45rem;border-bottom:none;border-left:2px solid rgba(44,74,62,0.28);background:rgba(255,255,255,0.55);border-radius:0 4px 4px 0}
+#room[data-format="live"] .msg-live .msg-head{font-size:0.72rem;margin-bottom:0.1rem}
+#room[data-format="live"] .msg-pulse{font-size:0.9rem;line-height:1.35;white-space:pre-wrap;word-break:break-word}
+#room[data-format="live"] .compose textarea.compose-live{min-height:2.6rem;max-height:5rem;resize:vertical;font-size:0.95rem}
+.compose-meta{display:flex;flex-wrap:wrap;align-items:baseline;justify-content:space-between;gap:0.35rem 0.85rem;margin-top:0.35rem;font-size:0.8rem;color:var(--muted)}
+.body-count{font-family:var(--mono);font-size:0.78rem;letter-spacing:0.02em}
+.body-count.near-cap{color:var(--open)}
+.body-count.over-cap{color:var(--danger);font-weight:600}
+.format-hint{font-size:0.75rem;text-transform:uppercase;letter-spacing:0.05em;color:var(--muted)}
+#room[data-format="live"] .format-hint{color:var(--human)}
+#room[data-format="board"] .thread-board{/* board keeps existing thread chrome */}
