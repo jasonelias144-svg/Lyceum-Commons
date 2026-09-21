@@ -3,7 +3,7 @@
 body.face {
   /* Gold sun kept on the face; plaza layers add depth inside atrium-air */
   background:
-    radial-gradient(ellipse 68% 52% at 58% 26%, var(--sun) 0%, transparent 64%,
+    radial-gradient(ellipse 68% 52% at 58% 26%, var(--sun) 0%, transparent 64%),
     linear-gradient(180deg, #fffefb 0%, var(--bg) 38%, var(--bg-shade) 100%);
 }
 .atrium {
