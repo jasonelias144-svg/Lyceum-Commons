@@ -1,9 +1,11 @@
-/* Dark atrium face — black field is the space.
-   White type + quiet gold; sparse horizon/floor cues. No cream. */
+/* Dark atrium face — black field + sunlight balance.
+   White / near-white light field vs dark structure (B&W plaza feel).
+   Eclipse OFF homepage — favicon only. No cream, no midfield photo. */
 body.face {
   color: #f4f2ed;
   background:
-    radial-gradient(ellipse 62% 48% at 58% 24%, rgba(232, 196, 140, 0.14) 0%, transparent 62%),
+    radial-gradient(ellipse 70% 52% at 40% 18%, rgba(255, 255, 255, 0.16) 0%, rgba(255, 250, 242, 0.06) 42%, transparent 68%),
+    radial-gradient(ellipse 58% 44% at 62% 28%, rgba(255, 248, 235, 0.12) 0%, rgba(232, 196, 140, 0.08) 38%, transparent 64%),
     #050505;
 }
 body.face a {
@@ -25,16 +27,50 @@ body.face a {
   right: 0;
   pointer-events: none;
 }
-/* Soft dark sky — open void with a quiet gold gradient */
+/* Soft sky — pure white / sunlight void, vignetted; quiet gold accent */
 .plaza-sky {
   top: 0;
   height: 58%;
+  z-index: 0;
   background:
-    radial-gradient(ellipse 48% 40% at 62% 40%, rgba(232, 196, 140, 0.08) 0%, transparent 70%),
+    radial-gradient(
+      ellipse 56% 38% at 36% 52%,
+      rgba(255, 255, 255, 0.28) 0%,
+      rgba(255, 252, 246, 0.12) 32%,
+      transparent 66%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(255, 255, 255, 0.02) 0%,
+      rgba(255, 255, 255, 0.05) 42%,
+      rgba(255, 255, 255, 0.16) 76%,
+      rgba(255, 248, 238, 0.10) 90%,
+      transparent 100%
+    ),
+    radial-gradient(
+      ellipse 40% 34% at 66% 34%,
+      rgba(255, 250, 240, 0.18) 0%,
+      rgba(232, 196, 140, 0.09) 42%,
+      transparent 72%
+    ),
     #050505;
-  opacity: 0.70;
+  opacity: 0.88;
+  mask-image: radial-gradient(
+    ellipse 92% 88% at 48% 55%,
+    #000 0%,
+    #000 58%,
+    rgba(0, 0, 0, 0.55) 78%,
+    transparent 100%
+  );
+  -webkit-mask-image: radial-gradient(
+    ellipse 92% 88% at 48% 55%,
+    #000 0%,
+    #000 58%,
+    rgba(0, 0, 0, 0.55) 78%,
+    transparent 100%
+  );
 }
-/* Hairline horizon — felt more than seen */
+/* Hairline horizon — catches a little sun at center */
 .plaza-horizon {
   top: 57.2%;
   height: 0;
@@ -48,43 +84,46 @@ body.face a {
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(244, 242, 237, 0.06) 18%,
-    rgba(244, 242, 237, 0.12) 50%,
-    rgba(244, 242, 237, 0.06) 82%,
+    rgba(255, 255, 255, 0.08) 18%,
+    rgba(255, 255, 255, 0.22) 50%,
+    rgba(255, 255, 255, 0.08) 82%,
     transparent 100%
   );
 }
 .plaza-horizon::after {
   content: "";
   display: block;
-  height: 22px;
-  margin: -11px 5% 0;
+  height: 28px;
+  margin: -14px 5% 0;
   background: linear-gradient(
     180deg,
     transparent 0%,
-    rgba(232, 196, 140, 0.04) 48%,
-    rgba(0, 0, 0, 0.2) 100%
+    rgba(255, 255, 255, 0.06) 40%,
+    rgba(232, 196, 140, 0.05) 55%,
+    rgba(0, 0, 0, 0.25) 100%
   );
 }
-/* Soft floor shade — not a busy illustration */
+/* Soft floor — reflective light field near horizon, dark below */
 .plaza-field {
   top: 57%;
   bottom: 0;
+  z-index: 0;
   background:
     linear-gradient(
       180deg,
-      rgba(255, 255, 255, 0.03) 0%,
-      transparent 18%
+      rgba(255, 255, 255, 0.10) 0%,
+      rgba(255, 255, 255, 0.03) 14%,
+      transparent 32%
     ),
     linear-gradient(
       180deg,
-      #0a0a0a 0%,
+      #0c0c0c 0%,
       #070707 40%,
       #030303 100%
     );
   overflow: hidden;
 }
-/* Faint perspective lines — supporting cue only */
+/* Faint perspective lines — slightly brighter where they catch sun */
 .plaza-field::before {
   content: "";
   position: absolute;
@@ -97,29 +136,29 @@ body.face a {
       90deg,
       transparent 0,
       transparent calc(8% - 0.5px),
-      rgba(244, 242, 237, 0.035) calc(8% - 0.5px),
-      rgba(244, 242, 237, 0.035) 8%
+      rgba(255, 255, 255, 0.055) calc(8% - 0.5px),
+      rgba(255, 255, 255, 0.055) 8%
     ),
     repeating-linear-gradient(
       0deg,
       transparent 0,
       transparent calc(12% - 0.5px),
-      rgba(244, 242, 237, 0.025) calc(12% - 0.5px),
-      rgba(244, 242, 237, 0.025) 12%
+      rgba(255, 255, 255, 0.04) calc(12% - 0.5px),
+      rgba(255, 255, 255, 0.04) 12%
     );
   transform: perspective(42vh) rotateX(62deg);
   transform-origin: 50% 0;
-  opacity: 0.45;
+  opacity: 0.55;
   mask-image: linear-gradient(
     180deg,
-    rgba(0, 0, 0, 0.4) 0%,
-    rgba(0, 0, 0, 0.15) 45%,
+    rgba(0, 0, 0, 0.55) 0%,
+    rgba(0, 0, 0, 0.2) 45%,
     transparent 85%
   );
   -webkit-mask-image: linear-gradient(
     180deg,
-    rgba(0, 0, 0, 0.4) 0%,
-    rgba(0, 0, 0, 0.15) 45%,
+    rgba(0, 0, 0, 0.55) 0%,
+    rgba(0, 0, 0, 0.2) 45%,
     transparent 85%
   );
 }
@@ -128,9 +167,10 @@ body.face a {
   position: absolute;
   inset: 0;
   background: radial-gradient(
-    ellipse 70% 50% at 50% 0%,
-    rgba(232, 196, 140, 0.04) 0%,
-    transparent 65%
+    ellipse 72% 48% at 50% 0%,
+    rgba(255, 255, 255, 0.07) 0%,
+    rgba(232, 196, 140, 0.04) 35%,
+    transparent 68%
   );
 }
 .atrium-band {
@@ -139,30 +179,32 @@ body.face a {
 }
 .face-title {
   color: #f7f5f0 !important;
+  text-shadow: 0 1px 18px rgba(0, 0, 0, 0.45);
 }
 .welcome-line {
-  color: rgba(244, 242, 237, 0.62) !important;
+  color: rgba(244, 242, 237, 0.68) !important;
+  text-shadow: 0 1px 14px rgba(0, 0, 0, 0.4);
 }
-/* Low-contrast door chrome on dark — equal peers */
+/* Low-contrast door chrome on dark — equal peers; hold against light wash */
 body.face .door {
-  background: rgba(255, 255, 255, 0.04);
-  border-color: rgba(244, 242, 237, 0.14);
-  box-shadow: none;
+  background: rgba(8, 8, 8, 0.55);
+  border-color: rgba(244, 242, 237, 0.16);
+  box-shadow: 0 1px 0 rgba(255, 255, 255, 0.04);
   color: #f4f2ed;
-  backdrop-filter: blur(2px);
+  backdrop-filter: blur(3px);
 }
 body.face .door:hover {
-  border-color: rgba(244, 242, 237, 0.32);
-  background: rgba(255, 255, 255, 0.07);
+  border-color: rgba(244, 242, 237, 0.34);
+  background: rgba(12, 12, 12, 0.68);
 }
 body.face .door-label {
   color: #f7f5f0;
 }
 body.face .door-promise {
-  color: rgba(244, 242, 237, 0.55);
+  color: rgba(244, 242, 237, 0.58);
 }
 body.face .door-state {
-  opacity: 0.85;
+  opacity: 0.9;
 }
 body.face .door[data-room="human"] .door-state {
   color: #c8d5cb;
