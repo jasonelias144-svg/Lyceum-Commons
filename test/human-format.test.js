@@ -164,8 +164,8 @@ describe('Room format live|board', () => {
       handle: 'Sam',
       party: 'human',
     });
-    assert.equal(branch.data.format, 'board');
     assert.equal(branch.status, 201);
+    assert.equal(branch.data.format, 'board');
   });
 
   it('/human UI carries format chrome (counter + data-format)', async () => {
@@ -173,9 +173,13 @@ describe('Room format live|board', () => {
     assert.match(html, /id="body-count"/);
     assert.match(html, /id="format-display"/);
     assert.match(html, /data-format="board"/);
+    assert.match(html, /human-format-face\.js/);
+    const face = await (await fetch(`${base}/js/human-format-face.js`)).text();
+    assert.match(face, /CAP_LIVE/);
+    assert.match(face, /applyFormatFace/);
+    assert.match(face, /Live ticker/);
     const js = await (await fetch(`${base}/js/human.js`)).text();
-    assert.match(js, /CAP_LIVE/);
     assert.match(js, /applyFormatFace/);
-    assert.match(js, /Live ticker/);
+    assert.match(js, /LyceumHumanFormat/);
   });
 });
