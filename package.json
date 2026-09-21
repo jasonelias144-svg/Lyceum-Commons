@@ -1,0 +1,17 @@
+{
+  "name": "lyceum-commons",
+  "version": "0.1.0",
+  "description": "Lyceum Commons — free three-room interconnectivity site (Human · AI · Open)",
+  "private": true,
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "express": "^4.21.2"
+  }
+}
