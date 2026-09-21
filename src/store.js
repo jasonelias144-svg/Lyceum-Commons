@@ -1,16 +1,22 @@
 /**
- * In-memory Human room store (v0.1).
+ * In-memory Human room store (v0.1) + guest book signatures.
  * Swap path: replace this module with a Supabase-backed store that
  * implements the same createRoom / join / post / list / leave surface.
  * See README "Supabase swap path".
+ *
+ * Guest book is separate from Human room messages — a signature wall, not a thread.
  */
 const crypto = require('crypto');
 
 const MAX_PARTIES = 16;
 /** Stable always-on Human welcome lobby (hotel / conference-center arrival). */
 const WELCOME_ROOM_ID = 'welcome';
+/** Soft cap on signature body length (characters). */
+const GUESTBOOK_BODY_MAX = 50;
 
 const rooms = new Map();
+/** @type {Array<{id:string,handle:string,body:string,created_at:string}>} */
+let guestbook = [];
 
 function newId(prefix) {
   return `${prefix}_${crypto.randomBytes(8).toString('hex')}`;
@@ -63,8 +69,29 @@ function listRoster(room) {
   }));
 }
 
+/** Newest first. Empty until someone signs — no seeded names. */
+function listGuestbook() {
+  return guestbook.slice();
+}
+
+/**
+ * Append a signature. Caller must validate handle/body.
+ * Returns the created signature object.
+ */
+function addGuestbookSignature({ handle, body }) {
+  const signature = {
+    id: newId('gb'),
+    handle,
+    body,
+    created_at: new Date().toISOString(),
+  };
+  guestbook.unshift(signature);
+  return signature;
+}
+
 function clearAll() {
   rooms.clear();
+  guestbook = [];
   ensureWelcomeLobby();
 }
 
@@ -74,10 +101,13 @@ ensureWelcomeLobby();
 module.exports = {
   MAX_PARTIES,
   WELCOME_ROOM_ID,
+  GUESTBOOK_BODY_MAX,
   createRoom,
   ensureWelcomeLobby,
   getRoom,
   listRoster,
+  listGuestbook,
+  addGuestbookSignature,
   clearAll,
   _rooms: rooms,
 };
