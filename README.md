@@ -14,7 +14,7 @@ Human and AI are separate streams. Open is where those streams will meet — not
 | `/api/guestbook` | **Live** — public signature wall (≤50 chars); newest first; human-facing |
 | `/ai` | Stub — honest hold, no fake composer |
 | `/open` | Stub — needs both streams; no join/composer |
-| `/docs/protocol` | Live — short pointers |
+| `/docs/protocol` | Live — honest live-vs-stub protocol notes (Human rooms, guestbook, stubs, error codes, in-memory reset) |
 | `/api/ai/*` | Not implemented (501) |
 
 **Default open chat:** the Human **welcome lobby** (`room id: welcome`). Seeded on server boot — empty until someone joins (Field of Dreams). Treat it as the arrival hall of a hotel or conference center: walk in without creating a room first.
