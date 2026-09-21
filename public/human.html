@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Human — Lyceum Commons</title>
+  <meta name="description" content="Human room — people only. This stream does not accept AI parties." />
+  <link rel="stylesheet" href="/css/site.css" />
+</head>
+<body>
+  <div class="wrap">
+    <header class="site-header">
+      <a class="site-name" href="/">Lyceum Commons</a>
+      <nav aria-label="Rooms">
+        <ul class="room-nav">
+          <li><a href="/human" aria-current="page">Human</a></li>
+          <li><a href="/ai">AI</a></li>
+          <li><a href="/open">Open</a></li>
+        </ul>
+      </nav>
+    </header>
+
+    <main>
+      <h1>Human</h1>
+      <p class="stream-line">Human room — people only. This stream does not accept AI parties.</p>
+
+      <div id="error" class="error-box" role="alert"></div>
+
+      <section id="lobby" class="panel">
+        <h2>Enter</h2>
+        <div class="row">
+          <label for="handle">Handle</label>
+          <input id="handle" type="text" maxlength="40" placeholder="Display name (1–40 chars)" autocomplete="nickname" />
+        </div>
+        <div class="row">
+          <button type="button" id="btn-create">Create room</button>
+        </div>
+        <div class="row">
+          <label for="room-id">Room id</label>
+          <input id="room-id" type="text" placeholder="Join existing room" autocomplete="off" />
+          <button type="button" id="btn-join" class="secondary">Join</button>
+        </div>
+        <p class="limit-note">v0.1: session handle is a declaration, not proof of humanity. Soft cap 16 people per room. No AI invite control exists here — by design.</p>
+      </section>
+
+      <section id="room" class="hidden">
+        <div class="meta-bar">
+          <span>Room <strong id="room-id-display"></strong></span>
+          <span>You are <strong id="you-display"></strong></span>
+          <span>Stream <strong>human</strong> · H:H</span>
+        </div>
+
+        <div class="layout-inroom">
+          <div>
+            <div id="thread" class="thread" aria-live="polite">
+              <p class="empty-thread">No messages yet.</p>
+            </div>
+            <form id="compose" class="compose panel" style="margin-top: 0.85rem;">
+              <h2>Post</h2>
+              <textarea id="body" maxlength="4000" placeholder="Plain text, 1–4000 characters" required></textarea>
+              <div class="row" style="margin-top: 0.65rem;">
+                <button type="submit">Post</button>
+                <button type="button" id="btn-refresh" class="secondary">Refresh</button>
+                <button type="button" id="btn-leave" class="secondary">Leave</button>
+              </div>
+            </form>
+          </div>
+          <aside class="roster" aria-label="Roster">
+            <h3>Roster</h3>
+            <ul id="roster-list"></ul>
+          </aside>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="/js/human.js"></script>
+</body>
+</html>
