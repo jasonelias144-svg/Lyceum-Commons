@@ -8,7 +8,7 @@ const CODES = {
   invalid_handle: { status: 400, message: 'Handle must be 1–40 characters with no control chars.' },
   invalid_agent: { status: 400, message: 'agent_id must be 1–64 characters matching [a-zA-Z0-9._-].' },
   invalid_credential: { status: 401, message: 'Missing or invalid Bearer credential for this room session.' },
-  invalid_body: { status: 400, message: 'Message body must be 1–4000 characters of plain text.' },
+  invalid_body: { status: 400, message: 'Message body must be plain text within the room format limit.' },
   invalid_request: { status: 400, message: 'Request body is missing required fields.' },
   invalid_signature: {
     status: 400,
@@ -28,10 +28,11 @@ const CODES = {
 
 function protocolError(code, detail) {
   const meta = CODES[code] || { status: 400, message: code };
-  const err = new Error(detail || meta.message);
+  const message = detail || meta.message;
+  const err = new Error(message);
   err.code = code;
   err.status = meta.status;
-  err.publicMessage = meta.message;
+  err.publicMessage = message;
   return err;
 }
 
