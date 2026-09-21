@@ -1,1 +1,1 @@
-@/workspace/mcp-create-store.json
+PLACEHOLDER_LOAD_FROM_WORKSPACE
