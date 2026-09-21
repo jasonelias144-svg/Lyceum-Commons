@@ -1,0 +1,163 @@
+/* Plaza depth cues for atrium midfield — gradients carry space; lines near-invisible.
+   White-gold only; no B&W conversion; no building illustration. */
+body.face {
+  /* Gold sun kept on the face; plaza layers add depth inside atrium-air */
+  background:
+    radial-gradient(ellipse 68% 52% at 58% 26%, var(--sun) 0%, transparent 64%,
+    linear-gradient(180deg, #fffefb 0%, var(--bg) 38%, var(--bg-shade) 100%);
+}
+.atrium {
+  position: relative;
+}
+.atrium-air {
+  position: relative;
+  overflow: hidden;
+  isolation: isolate;
+}
+.plaza-sky,
+.plaza-horizon,
+.plaza-field {
+  position: absolute;
+  left: 0;
+  right: 0;
+  pointer-events: none;
+}
+.plaza-sky {
+  top: 0;
+  height: 58%;
+  background:
+    radial-gradient(ellipse 50% 42% at 64% 42%, rgba(232, 196, 140, 0.26) 0%, transparent 68%),
+    radial-gradient(ellipse 80% 55% at 40% 18%, rgba(255, 255, 255, 0.55) 0%, transparent 60%),
+    linear-gradient(
+      180deg,
+      #fffefb 0%,
+      #fffcf8 28%,
+      #faf6ef 62%,
+      #f3eee4 88%,
+      #ebe4d6 100%
+    );
+}
+.plaza-horizon {
+  top: 57.2%;
+  height: 0;
+  z-index: 2;
+}
+.plaza-horizon::before {
+  content: "";
+  display: block;
+  height: 1px;
+  margin: 0 6%;
+  background: linear-gradient(
+    90deg,
+    transparent 0%,
+    rgba(28, 27, 25, 0.045) 12%,
+    rgba(28, 27, 25, 0.09) 48%,
+    rgba(28, 27, 25, 0.045) 88%,
+    transparent 100%
+  );
+}
+.plaza-horizon::after {
+  content: "";
+  display: block;
+  height: 28px;
+  margin: -14px 4% 0;
+  background: linear-gradient(
+    180deg,
+    transparent 0%,
+    rgba(255, 252, 247, 0.35) 42%,
+    rgba(232, 196, 140, 0.06) 50%,
+    rgba(60, 48, 28, 0.04) 58%,
+    transparent 100%
+  );
+}
+.plaza-field {
+  top: 57%;
+  bottom: 0;
+  background:
+    linear-gradient(
+      180deg,
+      rgba(255, 252, 247, 0.42) 0%,
+      rgba(255, 250, 242, 0.12) 14%,
+      transparent 32%
+    ),
+    linear-gradient(
+      180deg,
+      rgba(243, 239, 230, 0.2) 0%,
+      rgba(232, 224, 208, 0.38) 38%,
+      rgba(214, 204, 184, 0.52) 100%
+    ),
+    radial-gradient(
+      ellipse 120% 90% at 50% 100%,
+      rgba(60, 48, 28, 0.07) 0%,
+      transparent 55%
+    ),
+    linear-gradient(180deg, #f7f2e8 0%, #ebe3d4 100%);
+  overflow: hidden;
+}
+.plaza-field::before {
+  content: "";
+  position: absolute;
+  left: -35%;
+  right: -35%;
+  top: 0;
+  height: 160%;
+  background-image:
+    repeating-linear-gradient(
+      90deg,
+      transparent 0,
+      transparent calc(7.5% - 0.5px),
+      rgba(28, 27, 25, 0.038) calc(7.5% - 0.5px),
+      rgba(28, 27, 25, 0.038) 7.5%
+    ),
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent calc(11% - 0.5px),
+      rgba(28, 27, 25, 0.03) calc(11% - 0.5px),
+      rgba(28, 27, 25, 0.03) 11%
+    );
+  transform: perspective(42vh) rotateX(62deg);
+  transform-origin: 50% 0;
+  opacity: 0.55;
+  mask-image: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.45) 0%,
+    rgba(0, 0, 0, 0.22) 40%,
+    rgba(0, 0, 0, 0.06) 72%,
+    transparent 100%
+  );
+  -webkit-mask-image: linear-gradient(
+    180deg,
+    rgba(0, 0, 0, 0.45) 0%,
+    rgba(0, 0, 0, 0.22) 40%,
+    rgba(0, 0, 0, 0.06) 72%,
+    transparent 100%
+  );
+}
+.plaza-field::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background:
+    radial-gradient(
+      ellipse 55% 40% at 50% 0%,
+      rgba(255, 252, 247, 0.35) 0%,
+      transparent 70%
+    ),
+    linear-gradient(
+      90deg,
+      rgba(60, 48, 28, 0.035) 0%,
+      transparent 22%,
+      transparent 78%,
+      rgba(60, 48, 28, 0.035) 100%
+    );
+}
+.atrium-band {
+  position: relative;
+  z-index: 1;
+}
+@media (max-width: 720px) {
+  .plaza-sky { height: 54%; }
+  .plaza-horizon { top: 53%; }
+  .plaza-field { top: 53%; }
+}
