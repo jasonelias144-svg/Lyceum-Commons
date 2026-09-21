@@ -126,15 +126,25 @@ function makeRoom({ id, title, parent_id = null, merged_into = null }) {
   };
 }
 
-function hostOrientationMessage(roomId, body) {
+/** Host / system message. Seeded orientations may use stable:true (once per room). Merge/branch notices must be unique for ?after= pagination. */
+function hostOrientationMessage(roomId, body, { stable = false } = {}) {
+  const id = stable
+    ? `msg_host_${roomId.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`
+    : `msg_host_${crypto.randomBytes(6).toString('hex')}`;
   return {
-    id: `msg_host_${roomId.replace(/[^a-z0-9]+/gi, '_').toLowerCase()}`,
+    id,
     room_id: roomId,
     author: HOST_HANDLE,
     party: 'human',
     body,
     created_at: new Date().toISOString(),
   };
+}
+
+const ROOT_TOPIC_IDS = new Set(TOPIC_SEEDS.map((s) => s.id));
+
+function isRootTopic(id) {
+  return ROOT_TOPIC_IDS.has(id);
 }
 
 function createRoom() {
@@ -163,7 +173,21 @@ function branchRoom(parent, { title } = {}) {
   return room;
 }
 
-function mergeRooms(source, target) {
+function resolveMergeDest(target) {
+  let dest = target;
+  const seen = new Set();
+  while (dest.merged_into) {
+    if (seen.has(dest.id)) break;
+    seen.add(dest.id);
+    const next = rooms.get(dest.merged_into);
+    if (!next) break;
+    dest = next;
+  }
+  return dest;
+}
+
+/** Structural merge policy (no mutation). Throws err.code for protocol mapping. */
+function assertMergeAllowed(source, target) {
   if (!source || !target) throw new Error('source and target required');
   if (source.id === target.id) {
     const err = new Error('cannot_merge_self');
@@ -175,25 +199,32 @@ function mergeRooms(source, target) {
     err.code = 'cannot_merge_welcome';
     throw err;
   }
+  if (isRootTopic(source.id)) {
+    const err = new Error('cannot_merge_root');
+    err.code = 'cannot_merge_root';
+    throw err;
+  }
   if (source.merged_into) {
     const err = new Error('already_merged');
     err.code = 'already_merged';
     throw err;
   }
-  let dest = target;
-  const seen = new Set();
-  while (dest.merged_into) {
-    if (seen.has(dest.id)) break;
-    seen.add(dest.id);
-    const next = rooms.get(dest.merged_into);
-    if (!next) break;
-    dest = next;
-  }
+  const dest = resolveMergeDest(target);
   if (dest.id === source.id) {
     const err = new Error('cannot_merge_self');
     err.code = 'cannot_merge_self';
     throw err;
   }
+  if (dest.id === WELCOME_ROOM_ID) {
+    const err = new Error('cannot_merge_into_welcome');
+    err.code = 'cannot_merge_into_welcome';
+    throw err;
+  }
+  return dest;
+}
+
+function mergeRooms(source, target) {
+  const dest = assertMergeAllowed(source, target);
 
   const incoming = source.messages
     .slice()
@@ -260,13 +291,13 @@ function ensureTopicRoom({ id, title, host_body }) {
     if (existing.merged_into === undefined) existing.merged_into = null;
     if (!existing.merge_history) existing.merge_history = [];
     if (existing.messages.length === 0 && host_body) {
-      existing.messages.push(hostOrientationMessage(id, host_body));
+      existing.messages.push(hostOrientationMessage(id, host_body, { stable: true }));
     }
     return existing;
   }
   const room = makeRoom({ id, title, parent_id: null });
   if (host_body) {
-    room.messages.push(hostOrientationMessage(id, host_body));
+    room.messages.push(hostOrientationMessage(id, host_body, { stable: true }));
   }
   rooms.set(id, room);
   return room;
@@ -335,9 +366,12 @@ module.exports = {
   GUESTBOOK_BODY_MAX,
   HOST_HANDLE,
   TOPIC_SEEDS,
+  ROOT_TOPIC_IDS,
+  isRootTopic,
   createRoom,
   branchRoom,
   mergeRooms,
+  assertMergeAllowed,
   ensureWelcomeLobby,
   ensureTopicRoom,
   ensureSeededRooms,
