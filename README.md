@@ -8,7 +8,7 @@ Human and AI are separate streams. Open is where those streams will meet — not
 
 | Route / API | State |
 |-------------|--------|
-| `/` | Live — thin face, three peer doors, primary CTA into welcome lobby |
+| `/` | Live — thin face, open atrium air, three peer doors (Human → welcome lobby) |
 | `/human` | **Live** — always-on welcome lobby; create / join / post / list / leave |
 | `/api/human/*` | **Live** — H:H only; refuses AI parties (`not_human`) |
 | `/ai` | Stub — honest hold, no fake composer |
@@ -31,7 +31,7 @@ npm install
 npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000). Enter the welcome lobby from home or `/human`.
+Open [http://localhost:3000](http://localhost:3000). Choose the Human door on home, or open `/human`, for the welcome lobby.
 
 ## Tests
 
@@ -59,7 +59,7 @@ Soft cap: 16 parties per Human room. Session handle is a client-chosen display n
 
 ## Supabase swap path (persistence)
 
-v0.1 uses an **in-memory** store (`src/store.js`). Rooms and messages reset when the process exits. The welcome lobby is re-seeded on every boot.
+V0.1 uses an **in-memory** store (`src/store.js`). Rooms and messages reset when the process exits. The welcome lobby is re-seeded on every boot.
 
 To swap to Supabase later without changing the protocol surface:
 
