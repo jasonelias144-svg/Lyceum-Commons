@@ -5,14 +5,29 @@
  * See README "Supabase swap path".
  *
  * Guest book is separate from Human room messages — a signature wall, not a thread.
+ *
+ * Seeded rooms: welcome lobby + fixed empty topic rooms (Field of Dreams).
  */
 const crypto = require('crypto');
 
 const MAX_PARTIES = 16;
 /** Stable always-on Human welcome lobby (hotel / conference-center arrival). */
 const WELCOME_ROOM_ID = 'welcome';
+const WELCOME_TITLE = 'Welcome lobby';
 /** Soft cap on signature body length (characters). */
 const GUESTBOOK_BODY_MAX = 50;
+
+/**
+ * Fixed starter topic rooms — stable ids, serious plain titles.
+ * Empty until someone joins; re-seeded after clearAll like welcome.
+ */
+const TOPIC_SEEDS = Object.freeze([
+  { id: 'topic-interconnectivity', title: 'Interconnectivity' },
+  { id: 'topic-protocols', title: 'Protocols' },
+  { id: 'topic-naming', title: 'Naming' },
+  { id: 'topic-building', title: 'Building' },
+  { id: 'topic-questions', title: 'Questions' },
+]);
 
 const rooms = new Map();
 /** @type {Array<{id:string,handle:string,body:string,created_at:string}>} */
@@ -22,10 +37,10 @@ function newId(prefix) {
   return `${prefix}_${crypto.randomBytes(8).toString('hex')}`;
 }
 
-function createRoom() {
-  const id = newId('hrm');
-  const room = {
+function makeRoom({ id, title }) {
+  return {
     id,
+    title,
     stream: 'human',
     participants: 'H:H',
     format: 'free_thread',
@@ -33,6 +48,11 @@ function createRoom() {
     roster: new Map(), // handle -> { handle, joined_at }
     messages: [],
   };
+}
+
+function createRoom() {
+  const id = newId('hrm');
+  const room = makeRoom({ id, title: 'Private room' });
   rooms.set(id, room);
   return room;
 }
@@ -43,18 +63,51 @@ function createRoom() {
  */
 function ensureWelcomeLobby() {
   const existing = rooms.get(WELCOME_ROOM_ID);
-  if (existing) return existing;
-  const room = {
-    id: WELCOME_ROOM_ID,
-    stream: 'human',
-    participants: 'H:H',
-    format: 'free_thread',
-    created_at: new Date().toISOString(),
-    roster: new Map(),
-    messages: [],
-  };
+  if (existing) {
+    if (!existing.title) existing.title = WELCOME_TITLE;
+    return existing;
+  }
+  const room = makeRoom({ id: WELCOME_ROOM_ID, title: WELCOME_TITLE });
   rooms.set(WELCOME_ROOM_ID, room);
   return room;
+}
+
+/**
+ * Seed (or return) one named topic room. Empty roster / messages — no fakes.
+ */
+function ensureTopicRoom({ id, title }) {
+  const existing = rooms.get(id);
+  if (existing) {
+    if (!existing.title) existing.title = title;
+    return existing;
+  }
+  const room = makeRoom({ id, title });
+  rooms.set(id, room);
+  return room;
+}
+
+/** Seed welcome + all starter topic rooms. */
+function ensureSeededRooms() {
+  ensureWelcomeLobby();
+  for (const seed of TOPIC_SEEDS) {
+    ensureTopicRoom(seed);
+  }
+}
+
+/**
+ * List seeded topic rooms for the shelf (excludes welcome lobby).
+ * Returns [{ id, title, roster_count, message_count }].
+ */
+function listTopics() {
+  return TOPIC_SEEDS.map((seed) => {
+    const room = rooms.get(seed.id) || ensureTopicRoom(seed);
+    return {
+      id: room.id,
+      title: room.title || seed.title,
+      roster_count: room.roster.size,
+      message_count: room.messages.length,
+    };
+  });
 }
 
 function getRoom(id) {
@@ -92,18 +145,23 @@ function addGuestbookSignature({ handle, body }) {
 function clearAll() {
   rooms.clear();
   guestbook = [];
-  ensureWelcomeLobby();
+  ensureSeededRooms();
 }
 
-// Seed on module load so any require() of the store has the lobby.
-ensureWelcomeLobby();
+// Seed on module load so any require() of the store has lobby + topics.
+ensureSeededRooms();
 
 module.exports = {
   MAX_PARTIES,
   WELCOME_ROOM_ID,
+  WELCOME_TITLE,
   GUESTBOOK_BODY_MAX,
+  TOPIC_SEEDS,
   createRoom,
   ensureWelcomeLobby,
+  ensureTopicRoom,
+  ensureSeededRooms,
+  listTopics,
   getRoom,
   listRoster,
   listGuestbook,
