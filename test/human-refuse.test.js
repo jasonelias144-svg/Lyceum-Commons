@@ -80,8 +80,12 @@ describe('Refuse AI on Human API', () => {
     assert.equal(res.data.error.code, 'not_human');
   });
 
-  it('/api/ai is not implemented', async () => {
-    const res = await json('GET', '/api/ai/rooms');
-    assert.equal(res.status, 501);
+  it('AI API is live and refuses party human (not_ai)', async () => {
+    const res = await json('POST', '/api/ai/rooms', {
+      agent_id: 'probe',
+      party: 'human',
+    });
+    assert.equal(res.status, 403);
+    assert.equal(res.data.error.code, 'not_ai');
   });
 });
