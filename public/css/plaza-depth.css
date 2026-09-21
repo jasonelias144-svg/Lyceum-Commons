@@ -1,10 +1,13 @@
-/* Plaza depth cues for atrium midfield — gradients carry space; lines near-invisible.
-   White-gold only; no B&W conversion; no building illustration. */
+/* Dark atrium face — black field is the space.
+   White type + quiet gold; sparse horizon/floor cues. No cream. */
 body.face {
-  /* Gold sun kept on the face; plaza layers add depth inside atrium-air */
+  color: #f4f2ed;
   background:
-    radial-gradient(ellipse 68% 52% at 58% 26%, var(--sun) 0%, transparent 64%),
-    linear-gradient(180deg, #fffefb 0%, var(--bg) 38%, var(--bg-shade) 100%);
+    radial-gradient(ellipse 62% 48% at 58% 24%, rgba(232, 196, 140, 0.14) 0%, transparent 62%),
+    #050505;
+}
+body.face a {
+  color: #f4f2ed;
 }
 .atrium {
   position: relative;
@@ -22,21 +25,20 @@ body.face {
   right: 0;
   pointer-events: none;
 }
+/* Soft dark sky — void with faint gold wash */
 .plaza-sky {
   top: 0;
   height: 58%;
   background:
-    radial-gradient(ellipse 50% 42% at 64% 42%, rgba(232, 196, 140, 0.26) 0%, transparent 68%),
-    radial-gradient(ellipse 80% 55% at 40% 18%, rgba(255, 255, 255, 0.55) 0%, transparent 60%),
+    radial-gradient(ellipse 48% 40% at 62% 40%, rgba(232, 196, 140, 0.1) 0%, transparent 70%),
     linear-gradient(
       180deg,
-      #fffefb 0%,
-      #fffcf8 28%,
-      #faf6ef 62%,
-      #f3eee4 88%,
-      #ebe4d6 100%
+      #050505 0%,
+      #080808 45%,
+      #0c0c0c 100%
     );
 }
+/* Hairline horizon — felt more than seen */
 .plaza-horizon {
   top: 57.2%;
   height: 0;
@@ -46,54 +48,47 @@ body.face {
   content: "";
   display: block;
   height: 1px;
-  margin: 0 6%;
+  margin: 0 8%;
   background: linear-gradient(
     90deg,
     transparent 0%,
-    rgba(28, 27, 25, 0.045) 12%,
-    rgba(28, 27, 25, 0.09) 48%,
-    rgba(28, 27, 25, 0.045) 88%,
+    rgba(244, 242, 237, 0.06) 18%,
+    rgba(244, 242, 237, 0.12) 50%,
+    rgba(244, 242, 237, 0.06) 82%,
     transparent 100%
   );
 }
 .plaza-horizon::after {
   content: "";
   display: block;
-  height: 28px;
-  margin: -14px 4% 0;
+  height: 22px;
+  margin: -11px 5% 0;
   background: linear-gradient(
     180deg,
     transparent 0%,
-    rgba(255, 252, 247, 0.35) 42%,
-    rgba(232, 196, 140, 0.06) 50%,
-    rgba(60, 48, 28, 0.04) 58%,
-    transparent 100%
+    rgba(232, 196, 140, 0.04) 48%,
+    rgba(0, 0, 0, 0.2) 100%
   );
 }
+/* Soft floor shade — not a busy illustration */
 .plaza-field {
   top: 57%;
   bottom: 0;
   background:
     linear-gradient(
       180deg,
-      rgba(255, 252, 247, 0.42) 0%,
-      rgba(255, 250, 242, 0.12) 14%,
-      transparent 32%
+      rgba(255, 255, 255, 0.03) 0%,
+      transparent 18%
     ),
     linear-gradient(
       180deg,
-      rgba(243, 239, 230, 0.2) 0%,
-      rgba(232, 224, 208, 0.38) 38%,
-      rgba(214, 204, 184, 0.52) 100%
-    ),
-    radial-gradient(
-      ellipse 120% 90% at 50% 100%,
-      rgba(60, 48, 28, 0.07) 0%,
-      transparent 55%
-    ),
-    linear-gradient(180deg, #f7f2e8 0%, #ebe3d4 100%);
+      #0a0a0a 0%,
+      #070707 40%,
+      #030303 100%
+    );
   overflow: hidden;
 }
+/* Faint perspective lines — supporting cue only */
 .plaza-field::before {
   content: "";
   position: absolute;
@@ -105,56 +100,82 @@ body.face {
     repeating-linear-gradient(
       90deg,
       transparent 0,
-      transparent calc(7.5% - 0.5px),
-      rgba(28, 27, 25, 0.038) calc(7.5% - 0.5px),
-      rgba(28, 27, 25, 0.038) 7.5%
+      transparent calc(8% - 0.5px),
+      rgba(244, 242, 237, 0.035) calc(8% - 0.5px),
+      rgba(244, 242, 237, 0.035) 8%
     ),
     repeating-linear-gradient(
       0deg,
       transparent 0,
-      transparent calc(11% - 0.5px),
-      rgba(28, 27, 25, 0.03) calc(11% - 0.5px),
-      rgba(28, 27, 25, 0.03) 11%
+      transparent calc(12% - 0.5px),
+      rgba(244, 242, 237, 0.025) calc(12% - 0.5px),
+      rgba(244, 242, 237, 0.025) 12%
     );
   transform: perspective(42vh) rotateX(62deg);
   transform-origin: 50% 0;
-  opacity: 0.55;
+  opacity: 0.45;
   mask-image: linear-gradient(
     180deg,
-    rgba(0, 0, 0, 0.45) 0%,
-    rgba(0, 0, 0, 0.22) 40%,
-    rgba(0, 0, 0, 0.06) 72%,
-    transparent 100%
+    rgba(0, 0, 0, 0.4) 0%,
+    rgba(0, 0, 0, 0.15) 45%,
+    transparent 85%
   );
   -webkit-mask-image: linear-gradient(
     180deg,
-    rgba(0, 0, 0, 0.45) 0%,
-    rgba(0, 0, 0, 0.22) 40%,
-    rgba(0, 0, 0, 0.06) 72%,
-    transparent 100%
+    rgba(0, 0, 0, 0.4) 0%,
+    rgba(0, 0, 0, 0.15) 45%,
+    transparent 85%
   );
 }
 .plaza-field::after {
   content: "";
   position: absolute;
   inset: 0;
-  background:
-    radial-gradient(
-      ellipse 55% 40% at 50% 0%,
-      rgba(255, 252, 247, 0.35) 0%,
-      transparent 70%
-    ),
-    linear-gradient(
-      90deg,
-      rgba(60, 48, 28, 0.035) 0%,
-      transparent 22%,
-      transparent 78%,
-      rgba(60, 48, 28, 0.035) 100%
-    );
+  background: radial-gradient(
+    ellipse 70% 50% at 50% 0%,
+    rgba(232, 196, 140, 0.04) 0%,
+    transparent 65%
+  );
 }
 .atrium-band {
   position: relative;
   z-index: 1;
+}
+.face-title {
+  color: #f7f5f0 !important;
+}
+.welcome-line {
+  color: rgba(244, 242, 237, 0.62) !important;
+}
+/* Low-contrast door chrome on dark — equal peers */
+body.face .door {
+  background: rgba(255, 255, 255, 0.04);
+  border-color: rgba(244, 242, 237, 0.14);
+  box-shadow: none;
+  color: #f4f2ed;
+  backdrop-filter: blur(2px);
+}
+body.face .door:hover {
+  border-color: rgba(244, 242, 237, 0.32);
+  background: rgba(255, 255, 255, 0.07);
+}
+body.face .door-label {
+  color: #f7f5f0;
+}
+body.face .door-promise {
+  color: rgba(244, 242, 237, 0.55);
+}
+body.face .door-state {
+  opacity: 0.85;
+}
+body.face .door[data-room="human"] .door-state {
+  color: #c8d5cb;
+}
+body.face .door[data-room="ai"] .door-state {
+  color: #b8bdd4;
+}
+body.face .door[data-room="open"] .door-state {
+  color: #d4c4a8;
 }
 @media (max-width: 720px) {
   .plaza-sky { height: 54%; }
