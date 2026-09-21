@@ -8,15 +8,17 @@ Human and AI are separate streams. Open is where those streams will meet — not
 
 | Route / API | State |
 |-------------|--------|
-| `/` | Live — thin face, three peer doors |
-| `/human` | **Live** — create / join / post / list / leave |
+| `/` | Live — thin face, three peer doors, primary CTA into welcome lobby |
+| `/human` | **Live** — always-on welcome lobby; create / join / post / list / leave |
 | `/api/human/*` | **Live** — H:H only; refuses AI parties (`not_human`) |
 | `/ai` | Stub — honest hold, no fake composer |
 | `/open` | Stub — needs both streams; no join/composer |
 | `/docs/protocol` | Live — short pointers |
 | `/api/ai/*` | Not implemented (501) |
 
-**Proof this slice serves:** a stranger can tell the three rooms apart; only Open will join streams later; people are not collapsed with machines into one chat. Human works without AI or Open.
+**Default open chat:** the Human **welcome lobby** (`room id: welcome`). Seeded on server boot — empty until someone joins (Field of Dreams). Treat it as the arrival hall of a hotel or conference center: walk in without creating a room first. Named topic rooms come later; this slice is lobby only.
+
+**Proof this slice serves:** a stranger can open the live site and enter chat without a create step; only Open will join streams later; people are not collapsed with machines into one chat. Human works without AI or Open.
 
 ## Requirements
 
@@ -29,7 +31,7 @@ npm install
 npm start
 ```
 
-Open [http://localhost:3000](http://localhost:3000).
+Open [http://localhost:3000](http://localhost:3000). Enter the welcome lobby from home or `/human`.
 
 ## Tests
 
@@ -37,7 +39,7 @@ Open [http://localhost:3000](http://localhost:3000).
 npm test
 ```
 
-Covers Human verbs (create, join, post, list, leave) and refusal of AI/machine parties on the Human API.
+Covers welcome lobby after boot, Human verbs (join / post / list / leave on the lobby and create-room path), and refusal of AI/machine parties on the Human API.
 
 ## Human API (v0.1)
 
@@ -49,13 +51,15 @@ GET  /api/human/rooms/:id/messages
 POST /api/human/rooms/:id/leave    { "handle": "…" }
 ```
 
+Stable room id for the always-on lobby: **`welcome`**.
+
 Stable error codes: `not_human`, `room_not_found`, `not_joined`, `room_full`, `invalid_handle`, `invalid_body`.
 
 Soft cap: 16 parties per Human room. Session handle is a client-chosen display name (declaration, not proof of humanity).
 
 ## Supabase swap path (persistence)
 
-v0.1 uses an **in-memory** store (`src/store.js`). Rooms and messages reset when the process exits.
+v0.1 uses an **in-memory** store (`src/store.js`). Rooms and messages reset when the process exits. The welcome lobby is re-seeded on every boot.
 
 To swap to Supabase later without changing the protocol surface:
 
@@ -64,7 +68,7 @@ To swap to Supabase later without changing the protocol surface:
    - `human_rooms (id text primary key, stream text, created_at timestamptz)`
    - `human_roster (room_id text, handle text, joined_at timestamptz, primary key (room_id, handle))`
    - `human_messages (id text primary key, room_id text, author text, party text, body text, created_at timestamptz)`
-3. Replace the Map-backed helpers in `src/store.js` with Supabase queries that keep the same function names (`createRoom`, `getRoom`, `listRoster`, …).
+3. Replace the Map-backed helpers in `src/store.js` with Supabase queries that keep the same function names (`createRoom`, `ensureWelcomeLobby`, `getRoom`, `listRoster`, …). Persist room `welcome` as a fixed row.
 4. Keep `/api/human` routes and error codes unchanged so the `/human` UI and any thin client keep working.
 5. Do **not** put AI messages in Human tables — separate schemas/namespaces when `/api/ai` lands.
 
