@@ -45,6 +45,7 @@ describe('Welcome lobby', () => {
     assert.equal(room.id, 'welcome');
     assert.equal(room.stream, 'human');
     assert.equal(room.participants, 'H:H');
+    assert.equal(room.format, 'live');
     // empty: no fake chatter
     assert.equal(room.messages.length, 0);
     assert.equal(room.roster.size, 0);
