@@ -1,0 +1,39 @@
+/* Guest book — quiet signature wall (not a chat thread) */
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.guestbook{margin-top:1.35rem;max-width:36rem}
+.guestbook-title{font-family:var(--font);font-size:1rem;font-weight:600;margin:0 0 0.35rem;letter-spacing:0.01em}
+.guestbook-lede{font-size:0.85rem;margin:0 0 0.75rem;max-width:34em;line-height:1.45}
+.guestbook-cta{font-size:0.9rem;font-weight:600;margin:0.85rem 0 0.45rem;font-family:var(--font)}
+.guestbook-list{display:flex;flex-direction:column;gap:0.55rem;max-height:11rem;overflow-y:auto;padding:0.15rem 0}
+.guestbook-empty{margin:0;font-size:0.88rem;font-style:italic;opacity:0.75}
+.guestbook-entry{padding:0.4rem 0;border-bottom:1px solid rgba(28,27,25,0.08)}
+.guestbook-entry:last-child{border-bottom:none}
+.guestbook-body{margin:0 0 0.15rem;font-size:0.92rem;line-height:1.4;word-break:break-word}
+.guestbook-meta{margin:0;font-size:0.75rem;opacity:0.7}
+.guestbook-handle{font-weight:600}
+.guestbook-form{margin-top:0.15rem}
+.guestbook-fields{display:flex;flex-wrap:wrap;gap:0.4rem;align-items:center}
+.guestbook-fields input[type="text"]{flex:1 1 8rem;min-width:7rem;font:inherit;font-size:0.88rem;padding:0.4rem 0.5rem;border:1px solid var(--line);border-radius:var(--radius);background:#fff;color:var(--ink)}
+.guestbook-fields input:focus{outline:2px solid var(--focus);outline-offset:1px}
+.guestbook-fields button{flex:0 0 auto;font-size:0.85rem;padding:0.4rem 0.85rem}
+.guestbook-count{font-size:0.72rem;font-family:var(--mono);opacity:0.55;min-width:2.6rem}
+.guestbook-status{font-size:0.82rem;margin:0.45rem 0 0;color:var(--ok)}
+.guestbook-status.is-error{color:var(--danger)}
+.guestbook-lobby{margin-top:1rem}
+.guestbook-lobby .guestbook-lede,.guestbook-lobby .guestbook-empty,.guestbook-lobby .guestbook-meta{color:var(--muted)}
+.guestbook-lobby .guestbook-title,.guestbook-lobby .guestbook-cta,.guestbook-lobby .guestbook-body,.guestbook-lobby .guestbook-handle{color:var(--ink)}
+.guestbook-lobby .guestbook-entry{border-bottom-color:var(--line)}
+/* Guest book on face — quiet charcoal companion; does not rank doors */
+body.face .guestbook-face{margin:1.5rem 0 0.25rem;padding:0.95rem 1rem 1.05rem;max-width:36rem;background:rgba(8,8,8,0.42);border:1px solid rgba(244,242,237,0.12);border-radius:var(--radius);backdrop-filter:blur(2px);box-shadow:0 1px 0 rgba(255,255,255,0.03)}
+body.face .guestbook-face .guestbook-title{color:rgba(247,245,240,0.88);font-size:0.95rem}
+body.face .guestbook-face .guestbook-lede,body.face .guestbook-face .guestbook-empty,body.face .guestbook-face .guestbook-meta,body.face .guestbook-face .guestbook-count{color:rgba(244,242,237,0.52)}
+body.face .guestbook-face .guestbook-cta{color:rgba(247,245,240,0.82)}
+body.face .guestbook-face .guestbook-body,body.face .guestbook-face .guestbook-handle{color:rgba(247,245,240,0.9)}
+body.face .guestbook-face .guestbook-entry{border-bottom-color:rgba(244,242,237,0.08)}
+body.face .guestbook-face .guestbook-fields input[type="text"]{background:rgba(255,255,255,0.06);border-color:rgba(244,242,237,0.16);color:#f4f2ed}
+body.face .guestbook-face .guestbook-fields input::placeholder{color:rgba(244,242,237,0.35)}
+body.face .guestbook-face .guestbook-fields input:focus{outline-color:rgba(244,242,237,0.45)}
+body.face .guestbook-face .guestbook-fields button{background:rgba(244,242,237,0.12);border-color:rgba(244,242,237,0.28);color:#f4f2ed}
+body.face .guestbook-face .guestbook-fields button:hover{background:rgba(244,242,237,0.2)}
+body.face .guestbook-face .guestbook-status{color:rgba(200,213,203,0.9)}
+body.face .guestbook-face .guestbook-status.is-error{color:#e0a8a8}
