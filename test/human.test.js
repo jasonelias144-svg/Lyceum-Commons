@@ -48,16 +48,25 @@ describe('pages', () => {
     }
   });
 
-  it('home has three peer doors, not a chat-with-AI CTA', async () => {
+  it('home has three peer doors, locked welcome line, not a chat-with-AI CTA', async () => {
     const text = await (await fetch(`${base}/`)).text();
     assert.match(text, />Human</);
     assert.match(text, />AI</);
     assert.match(text, />Open</);
-    assert.match(text, /Not a shop/);
-    // Named only as something we are not — not as a primary action
-    assert.match(text, /Not .chat with AI. as the home affordance/i);
+    assert.match(
+      text,
+      /Welcome to Lyceum Commons\. Human, AI, and Open are peer doors — choose one when you.re ready\./
+    );
+    assert.match(text, /class="face"/);
+    assert.match(text, /class="atrium"/);
+    // Human door arrives at welcome lobby; AI/Open stay stubs
+    assert.match(text, /href=["']\/human\?room=welcome["']/);
+    assert.match(text, /href=["']\/ai["']/);
+    assert.match(text, /href=["']\/open["']/);
+    assert.doesNotMatch(text, /guest book|guestbook|topic shelf/i);
     assert.doesNotMatch(text, /href=["'][^"']*["'][^>]*>\s*chat with AI/i);
     assert.doesNotMatch(text, /Start chatting/i);
+    assert.doesNotMatch(text, /enter with an AI/i);
   });
 
   it('home and /human offer Enter welcome lobby as primary path', async () => {
