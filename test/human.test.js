@@ -95,6 +95,9 @@ describe('pages', () => {
     assert.match(human, /guest book/i);
     assert.match(human, /Sign the guest book/);
     assert.match(human, /Be the first to sign/);
+    assert.match(human, /Topic rooms/);
+    assert.match(human, /id="topic-shelf"/);
+    assert.match(human, /Field of Dreams/);
     // create is secondary
     assert.match(human, /id="btn-create"[^>]*class="secondary"|class="secondary"[^>]*id="btn-create"/);
   });
