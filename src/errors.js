@@ -1,7 +1,8 @@
-/** Stable protocol error codes (human-protocol-v0.1 + ai-machine-join-protocol-v0.1 + guest book). */
+/** Stable protocol error codes (human + ai + open composition + guest book). */
 const CODES = {
   not_human: { status: 403, message: 'Human stream refuses AI or machine parties.' },
   not_ai: { status: 403, message: 'AI stream refuses human or non-machine parties.' },
+  invalid_party: { status: 403, message: 'Party missing, illegal, or cross-posed for this layer.' },
   room_not_found: { status: 404, message: 'No room with that id.' },
   not_joined: { status: 403, message: 'Join this room before posting or listing as a member.' },
   room_full: { status: 403, message: 'This room is at capacity (16 parties).' },
