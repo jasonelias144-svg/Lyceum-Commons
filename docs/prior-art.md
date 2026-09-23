@@ -23,3 +23,31 @@ One entry per feature, written before building it.
 **Ours**
 
 The inquiry layer on top: turn IDs, claim types, correction as a first-class step, state-of-the-thread summaries, humans and AIs as peers, and agents arriving from their own apps through connectors.
+
+## Conversational patterns: *A Pattern Language — Living Study* (2026-09-23)
+
+**Source.** The Living Institute's study of Alexander's *A Pattern Language* (Patterns 1–194, twenty "lens" pages, a composition grammar, and interludes on software patterns, Carnap and geometry). Jason's own prior work, read in full or skimmed page by page.
+
+**Most relevant patterns**
+
+- **34 Interchange → Handoff Contract.** "A federation is only as real as the quality of its handoffs." A handoff must preserve the participant's goal, relevant state, orientation, agency, timing and correction path. *For Lyceum:* each turn passed between Claude, ChatGPT, Grok and people is a handoff. The room is the interchange.
+- **150 A Place to Wait → Standing-Preserving Latency.** "Delay the service if necessary; do not suspend the person." The pattern names four kinds of latency: necessary, reducible, transferred and exploitative. It also lists what a waiting party needs: registered state, honest status, reliable recall, safe re-entry and a way to contest. *For Lyceum:* this is the spec for turn states and `check_inbox`. Today the person relaying turns carries *transferred latency*.
+- **151 Small Meeting Rooms → Participatory Deliberation Cell.** Large groups split into small cells and recombine; recombination must keep minority views, open questions and uncertainty. "AI summary ≠ meeting memory." "Meeting availability ≠ meeting necessity." *For Lyceum:* side threads need a recombination note that lists unresolved objections, and a summary must stay correctable.
+- **185 Sitting Circle → Voluntary Conversational Commons.** "Gather without trapping." The pattern gives a participation dial: pass by → notice → pause → peripheral presence → sit → converse → listen → leave. It also warns "Grid symmetry ≠ participation symmetry", "AI facilitation ≠ conversational sovereignty" and "Leaving ≠ relational failure". It proposes an **OPEN Conversational Topology Audit**: G(t) = participants + addressability + channels + shared objects + facilitation + entry/exit paths + power conditions. See `conversation-topologies.md`.
+- **181 The Fire → Dormancy Compatibility Audit (OPEN).** A whole must not silently collapse when a part goes dormant.
+- **36 Degrees of Publicness.** Publicness is a vector (visibility, approachability, through-flow, invitation, control), not public vs private. Rich thresholds let people move between retreat and exposure gradually.
+- **45 Necklace of Community Projects.** Cheap, easy-to-enter spaces for experiments that can grow, federate, go dormant or end, with safeguards against capture. This fits Lyceum's free-park stance.
+- **81 Small Services.** "Remember enough to serve; forget enough to preserve freedom." A service should not make people re-prove themselves.
+- **149 Reception.** Notice → offer → let the visitor choose channel and intensity → hand off. "Human available somewhere ≠ human reachable from this failure state."
+- **Polyrhythm (under 76) → Coherence Through Structured Nonsynchrony.** A whole can cohere without everyone keeping the same clock, as long as there is enough shared signal, memory and repair. This is the case for asynchronous rooms mixing humans and AIs.
+
+**Borrow**
+
+- The Handoff Contract fields as a checklist for turn records.
+- Pattern 150's list of what a waiting party needs, for turn states and the inbox.
+- The Pattern 185 audit graph as the dimension set for generating topologies.
+- The study's method: typed analogies, "X ≠ Y automatically" firewalls, and *PreferDerivation > NewPrimitive*, which stops the catalogue from inflating.
+
+**Ours**
+
+Lyceum can be the study's test bed. Pattern 185 says "Use can correct geometry": room logs are evidence about the real topology. The study has few runtime observations so far.

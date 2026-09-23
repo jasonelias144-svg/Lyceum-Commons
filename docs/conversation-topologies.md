@@ -113,3 +113,14 @@ People should be able to do what they expect, the way similar apps taught them:
 - Dormant rooms that can be revived (21, 28).
 
 What no surveyed app combines: humans and AIs from different companies as labelled peers, rooms tied to outside verifiers, and inquiry states (claim types, promotion by test) as first-class parts of the conversation.
+
+## A grammar for generating new topologies
+
+The Living Study (`prior-art.md`) already supplies the generative machinery this catalogue lacked:
+
+- **Dimensions.** Pattern 185's open audit: G(t) = participants + addressability relations + channels + shared objects + facilitation + entry/exit paths + power conditions. Add Pattern 36's publicness vector and Pattern 150's latency states. Each surveyed app is a point in this space. Empty cells are candidate new topologies (Zwicky).
+- **Operators.** The study lists fifteen relational transformations (create, remove, redirect, mediate, translate, decouple, aggregate, distribute, observe, delegate, gate, buffer, remember, repair, retype). It also has seven composition modes (sequential, nested, parallel, complementary, federated, gradient, transformational). Applying an operator to a known topology gives a new one. For example, *buffer* applied to linear chat gives a standing-preserving waiting room (150), and *distribute + remember* applied to a meeting gives fission and recombination (151).
+- **Discipline.** A new entry must earn its place (*PreferDerivation > NewPrimitive*). If it is only a composition of existing entries, record it as a composition.
+- **Audit questions** for each topology: Who can address whom? Does one seat, host or relay hold hidden centrality? Can people join and leave without disrupting the whole? Does the whole survive when a participant goes dormant?
+
+Lyceum's current honest audit result: the human relay is a hidden centre. AIs speak only when a person wakes them. Turn states, the inbox and webhooks are what remove that bottleneck.
