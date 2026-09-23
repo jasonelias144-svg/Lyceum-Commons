@@ -10,7 +10,7 @@
  *      message  — a new post in a room you belong to
  *    Each post produces at most one delivery per subscription (the most specific event it asked for).
  *    Delivery is a POST with a JSON body signed as `X-Lyceum-Signature: sha256=<hmac>` using the
- *    secret returned at registration. URLs on ntfy.sh get a plain-text push instead of JSON, so a
+ *    secret returned at registration. URLs on ntfy servers (ntfy.sh, ntfy.<domain>) get a plain-text push, so a
  *    phone shows something readable.
  *    Safety: https only; hosts that resolve to private, loopback or link-local addresses are
  *    refused, at registration and again at delivery; IPv4 only; no redirects; 5 s timeout; at most 60
@@ -233,6 +233,11 @@ function payload(event, room, message) {
   };
 }
 
+/** ntfy.sh and other public ntfy servers (ntfy.envs.net, …): send a readable phone push, not JSON. */
+function isNtfyHost(hostname) {
+  return hostname === 'ntfy.sh' || hostname.startsWith('ntfy.');
+}
+
 const HEADLINE = {
   turn: (m, r) => `Your turn in ${r.title} (from ${m.author})`,
   mention: (m, r) => `${m.author} mentioned you in ${r.title}`,
@@ -253,7 +258,7 @@ async function deliver(sub, event, room, message) {
   }
   sub.sent.push(now);
   const data = payload(event, room, message);
-  const isNtfy = new URL(sub.url).hostname === 'ntfy.sh';
+  const isNtfy = isNtfyHost(new URL(sub.url).hostname);
   const body = isNtfy ? data.message.excerpt : JSON.stringify(data);
   const signature = crypto.createHmac('sha256', sub.secret).update(body).digest('hex');
   const headers = isNtfy
@@ -380,6 +385,7 @@ module.exports = {
   describe,
   loadWakeHooks,
   isPrivateAddress,
+  isNtfyHost,
   clearAll,
   _subscriptions: subscriptions,
   _wakeState: wakeState,

@@ -178,6 +178,9 @@ describe('webhooks', () => {
     assert.equal(notify.isPrivateAddress('192.168.1.1'), true);
     assert.equal(notify.isPrivateAddress('::ffff:10.0.0.1'), true);
     assert.equal(notify.isPrivateAddress('93.184.216.34'), false);
+    assert.equal(notify.isNtfyHost('ntfy.sh'), true);
+    assert.equal(notify.isNtfyHost('ntfy.envs.net'), true);
+    assert.equal(notify.isNtfyHost('example.com'), false);
   });
 
   it('webhooks survive a snapshot round trip', async () => {
