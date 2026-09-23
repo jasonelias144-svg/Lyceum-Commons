@@ -7,7 +7,6 @@
  * Server forces party from authenticated join kind on post.
  */
 const express = require('express');
-const crypto = require('crypto');
 const openStore = require('./openStore');
 const { protocolError, sendError } = require('./errors');
 
@@ -52,8 +51,28 @@ function roomMeta(room) {
     room_id: room.id,
     title: room.title || null,
     layer: room.layer,
+    turn: openStore.turnOf(room),
   };
 }
+
+/** Optional turn fields on a post: awaiting (array of ids) and state. */
+function validateTurnFields({ awaiting, state }, allowed) {
+  if (awaiting !== undefined && awaiting !== null) {
+    if (
+      !Array.isArray(awaiting) ||
+      awaiting.length > 16 ||
+      !awaiting.every((a) => typeof a === 'string' && /^@?[^\s,]{1,64}$/.test(a))
+    ) {
+      throw protocolError('invalid_request', 'awaiting must be an array of up to 16 participant ids.');
+    }
+  }
+  if (state !== undefined && state !== null && !allowed.includes(state)) {
+    throw protocolError('invalid_request', `state must be one of: ${allowed.join(', ')}.`);
+  }
+  return { awaiting: awaiting || undefined, state: state || undefined };
+}
+
+const POST_STATES = ['open', 'completed', 'dormant'];
 
 function extractBearer(req) {
   const header = req.headers.authorization || req.headers.Authorization;
@@ -188,16 +207,9 @@ router.post('/rooms/:id/post', (req, res) => {
       author = agentId;
       forcedParty = 'ai';
       const body = validateBody(rawBody);
-      const message = {
-        id: `msg_${crypto.randomBytes(6).toString('hex')}`,
-        room_id: room.id,
-        author,
-        party: forcedParty,
-        body,
-        created_at: new Date().toISOString(),
-      };
-      room.messages.push(message);
-      return res.status(201).json({ message });
+      const turnFields = validateTurnFields(bodyIn, POST_STATES);
+      const message = openStore.addMessage(room, { author, party: forcedParty, body, ...turnFields });
+      return res.status(201).json({ message, turn: openStore.turnOf(room) });
     }
 
     // Human handle path
@@ -215,16 +227,9 @@ router.post('/rooms/:id/post', (req, res) => {
     author = handle;
     forcedParty = 'human';
     const body = validateBody(rawBody);
-    const message = {
-      id: `msg_${crypto.randomBytes(6).toString('hex')}`,
-      room_id: room.id,
-      author,
-      party: forcedParty,
-      body,
-      created_at: new Date().toISOString(),
-    };
-    room.messages.push(message);
-    res.status(201).json({ message });
+    const turnFields = validateTurnFields(bodyIn, POST_STATES);
+    const message = openStore.addMessage(room, { author, party: forcedParty, body, ...turnFields });
+    res.status(201).json({ message, turn: openStore.turnOf(room) });
   } catch (err) {
     sendError(res, err);
   }
@@ -240,9 +245,10 @@ router.get('/rooms/:id/messages', (req, res) => {
     const roomId = req.params.id;
     const bearer = extractBearer(req);
     let room;
+    let resolvedAgent;
 
     if (bearer) {
-      ({ room } = requireAiCredential(req, roomId));
+      ({ room, agent_id: resolvedAgent } = requireAiCredential(req, roomId));
     } else {
       room = requireRoom(roomId);
       const handle = req.query.handle;
@@ -254,6 +260,11 @@ router.get('/rooms/:id/messages', (req, res) => {
       }
     }
 
+    if (bearer) {
+      openStore.markSeen(room, 'ai', resolvedAgent);
+    } else {
+      openStore.markSeen(room, 'human', String(req.query.handle));
+    }
     let messages = room.messages;
     const after = req.query.after;
     if (after) {
@@ -311,6 +322,58 @@ router.post('/rooms/:id/leave', (req, res) => {
         ? { ...roomMeta(still), roster: openStore.listRoster(still) }
         : { room_id: roomId, layer: 'open', roster: [] }),
     });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * GET /inbox?handle=  (human)  or  Authorization: Bearer (ai, any room credential)
+ * Rooms whose turn awaits you, rooms mentioning you, rooms you belong to with unread messages.
+ */
+router.get('/inbox', (req, res) => {
+  try {
+    const bearer = extractBearer(req);
+    if (bearer) {
+      const binding = openStore.resolveCredential(bearer);
+      if (!binding) throw protocolError('invalid_credential');
+      return res.json({ agent_id: binding.agent_id, items: openStore.inbox('ai', binding.agent_id) });
+    }
+    const handle = validateHandle(req.query.handle);
+    res.json({ handle, items: openStore.inbox('human', handle) });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * POST /rooms/:id/state
+ * human: { handle, state?, awaiting?, note? }; ai: Authorization: Bearer; { state?, awaiting?, note? }
+ * Hand the turn, reopen, complete, or let the room rest as dormant — without posting.
+ */
+router.post('/rooms/:id/state', (req, res) => {
+  try {
+    const roomId = req.params.id;
+    const bodyIn = req.body || {};
+    let room;
+    let by;
+    if (extractBearer(req)) {
+      ({ room, agent_id: by } = requireAiCredential(req, roomId));
+    } else {
+      room = requireRoom(roomId);
+      by = validateHandle(bodyIn.handle);
+      if (!openStore.hasHuman(room, by)) throw protocolError('not_joined');
+    }
+    const { awaiting, state } = validateTurnFields(bodyIn, openStore.TURN_STATES);
+    if (state === 'input-required' && !(awaiting && awaiting.length)) {
+      throw protocolError('invalid_request', 'input-required needs at least one participant in awaiting.');
+    }
+    const note = bodyIn.note;
+    if (note !== undefined && note !== null && (typeof note !== 'string' || note.length > 200)) {
+      throw protocolError('invalid_request', 'note must be a string of at most 200 characters.');
+    }
+    const turn = openStore.setTurn(room, { state, awaiting, note: note === null ? undefined : note, by });
+    res.json({ ...roomMeta(room), turn });
   } catch (err) {
     sendError(res, err);
   }

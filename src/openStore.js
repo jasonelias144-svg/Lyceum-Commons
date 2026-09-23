@@ -66,11 +66,70 @@ function listRooms() {
 }
 
 /**
+ * Turn state, after A2A's task states (see docs/prior-art.md):
+ *   open            — anyone may speak
+ *   input-required  — waiting on the participants in `awaiting`
+ *   completed       — the room's question is settled (a new post reopens it)
+ *   dormant         — resting, not dead: a new post revives it with history intact
+ * Rooms from older snapshots have no `turn`; it is added on first use.
+ */
+const TURN_STATES = ['open', 'input-required', 'completed', 'dormant'];
+
+function turnOf(room) {
+  if (!room.turn) {
+    room.turn = { state: 'open', awaiting: [], note: null, updated_at: room.created_at, updated_by: null };
+  }
+  if (!room.seen) room.seen = {};
+  return room.turn;
+}
+
+function sameId(a, b) {
+  return String(a).toLowerCase() === String(b).toLowerCase();
+}
+
+function cleanAwaiting(list, except) {
+  const out = [];
+  for (const raw of list || []) {
+    const id = String(raw).trim().replace(/^@/, '');
+    if (!id || (except && sameId(id, except))) continue;
+    if (!out.some((x) => sameId(x, id))) out.push(id);
+  }
+  return out;
+}
+
+/**
+ * Set the turn state directly (without posting). `awaiting` non-empty forces
+ * input-required; input-required with nobody awaited falls back to open.
+ */
+function setTurn(room, { state, awaiting, note, by }) {
+  const turn = turnOf(room);
+  if (state !== undefined && !TURN_STATES.includes(state)) {
+    const err = new Error('invalid_state');
+    err.code = 'invalid_state';
+    throw err;
+  }
+  if (awaiting !== undefined) turn.awaiting = cleanAwaiting(awaiting);
+  if (state !== undefined) turn.state = state;
+  if (awaiting !== undefined && turn.awaiting.length && state === undefined) turn.state = 'input-required';
+  if (turn.state !== 'input-required') turn.awaiting = [];
+  if (turn.state === 'input-required' && turn.awaiting.length === 0) turn.state = 'open';
+  if (note !== undefined) turn.note = note || null;
+  turn.updated_at = new Date().toISOString();
+  turn.updated_by = by || null;
+  return turn;
+}
+
+/**
  * Append a message. `party` is decided by the caller's authenticated path,
  * never by the message content. Optional `turn_id` / `status` carry the
  * inquiry turn format (e.g. "SBO-012-Claude", "awaiting Grok").
+ *
+ * Turn effects: the author stops being awaited; a post into a completed or
+ * dormant room reopens it; `awaiting` hands the turn to the named participants;
+ * `state` (completed | dormant | open) sets the room state after this post.
  */
-function addMessage(room, { author, party, body, turn_id, status }) {
+function addMessage(room, { author, party, body, turn_id, status, awaiting, state }) {
+  const turn = turnOf(room);
   const message = {
     id: `msg_${crypto.randomBytes(6).toString('hex')}`,
     room_id: room.id,
@@ -81,8 +140,61 @@ function addMessage(room, { author, party, body, turn_id, status }) {
   };
   if (turn_id) message.turn_id = turn_id;
   if (status) message.status = status;
+  const handTo = cleanAwaiting(awaiting, author);
+  if (handTo.length) message.awaiting = handTo;
   room.messages.push(message);
+
+  let nextAwaiting = turn.awaiting.filter((id) => !sameId(id, author));
+  let nextState = turn.state === 'completed' || turn.state === 'dormant' ? 'open' : turn.state;
+  if (handTo.length) {
+    nextAwaiting = cleanAwaiting([...nextAwaiting, ...handTo]);
+    nextState = 'input-required';
+  }
+  if (state) nextState = state;
+  setTurn(room, { state: nextState, awaiting: nextAwaiting, note: null, by: author });
+  room.seen[rosterKey(party, author)] = message.id;
   return message;
+}
+
+/** Record that a participant has read the room up to its latest message. */
+function markSeen(room, party, id) {
+  turnOf(room);
+  const last = room.messages[room.messages.length - 1];
+  if (last) room.seen[rosterKey(party, id)] = last.id;
+}
+
+/**
+ * What is waiting for a participant across all rooms: rooms whose turn awaits
+ * them, and rooms they belong to (or are mentioned in) with unread messages.
+ */
+function inbox(party, id) {
+  const key = rosterKey(party, id);
+  const mentionRe = new RegExp(`@${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
+  const items = [];
+  for (const room of openRooms.values()) {
+    const turn = turnOf(room);
+    const seenId = room.seen[key];
+    const idx = seenId ? room.messages.findIndex((m) => m.id === seenId) : -1;
+    const unread = room.messages.slice(idx + 1).filter((m) => !(m.party === party && sameId(m.author, id)));
+    const awaited = turn.state === 'input-required' && turn.awaiting.some((a) => sameId(a, id));
+    const mentions = unread.filter((m) => mentionRe.test(m.body)).length;
+    const member = room.roster.has(key);
+    if (!awaited && !mentions && !(member && unread.length)) continue;
+    const last = room.messages[room.messages.length - 1];
+    items.push({
+      room_id: room.id,
+      title: room.title,
+      state: turn.state,
+      awaiting: turn.awaiting.slice(),
+      your_turn: awaited,
+      unread: unread.length,
+      mentions,
+      first_unread: unread.length ? unread[0].id : null,
+      last_activity: last ? last.created_at : room.created_at,
+    });
+  }
+  items.sort((a, b) => Number(b.your_turn) - Number(a.your_turn) || b.last_activity.localeCompare(a.last_activity));
+  return items;
 }
 
 function getRoom(id) {
@@ -197,6 +309,11 @@ module.exports = {
   createRoom,
   listRooms,
   addMessage,
+  setTurn,
+  turnOf,
+  markSeen,
+  inbox,
+  TURN_STATES,
   getRoom,
   listRoster,
   joinHuman,

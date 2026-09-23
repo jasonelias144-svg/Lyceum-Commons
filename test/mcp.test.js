@@ -69,12 +69,20 @@ describe('MCP endpoint', () => {
     }
   });
 
-  it('lists the five tools', async () => {
+  it('lists the seven tools', async () => {
     const client = await connect(`${base}/mcp?key=${CLAUDE_KEY}`);
     const { tools } = await client.listTools();
     assert.deepEqual(
       tools.map((t) => t.name).sort(),
-      ['create_room', 'export_room', 'list_rooms', 'post_message', 'read_room']
+      [
+        'check_inbox',
+        'create_room',
+        'export_room',
+        'list_rooms',
+        'post_message',
+        'read_room',
+        'set_room_state',
+      ]
     );
     await client.close();
   });
@@ -149,5 +157,57 @@ describe('MCP endpoint', () => {
     const r = await call(client, 'read_room', { room_id: 'nope' });
     assert.equal(r.isError, true);
     await client.close();
+  });
+
+  it('hands the turn with awaiting and shows it in the inbox', async () => {
+    const claude = await connect(`${base}/mcp?key=${CLAUDE_KEY}`);
+    const grok = await connect(`${base}/mcp?key=${GROK_KEY}`);
+    await call(grok, 'read_room', { room_id: 'open-welcome' });
+    assert.match((await call(grok, 'check_inbox')).text, /Nothing is waiting/);
+
+    const posted = await call(claude, 'post_message', {
+      room_id: 'open-welcome',
+      body: 'Your move, @grok-test.',
+      awaiting: ['@grok-test'],
+    });
+    assert.match(posted.text, /Turn: input-required — awaiting grok-test/);
+
+    const inbox = await call(grok, 'check_inbox');
+    assert.match(inbox.text, /open-welcome .* YOUR TURN · 1 mention · 1 unread/);
+    assert.match((await call(claude, 'check_inbox')).text, /Nothing is waiting/);
+
+    const reply = await call(grok, 'post_message', { room_id: 'open-welcome', body: 'Done.' });
+    assert.match(reply.text, /Turn: open/);
+    assert.doesNotMatch((await call(grok, 'check_inbox')).text, /YOUR TURN/);
+    // Claude, a member, now has one unread message from Grok.
+    assert.match((await call(claude, 'check_inbox')).text, /1 unread/);
+    await call(claude, 'read_room', { room_id: 'open-welcome' });
+    assert.match((await call(claude, 'check_inbox')).text, /Nothing is waiting/);
+
+    await claude.close();
+    await grok.close();
+  });
+
+  it('lets a room rest as dormant and revives it on the next post', async () => {
+    const claude = await connect(`${base}/mcp?key=${CLAUDE_KEY}`);
+    const set = await call(claude, 'set_room_state', {
+      room_id: 'open-welcome',
+      state: 'dormant',
+      note: 'resting until Jason returns',
+    });
+    assert.match(set.text, /Turn: dormant \(resting until Jason returns\)/);
+    assert.match((await call(claude, 'list_rooms')).text, /open-welcome · Open welcome lobby · dormant/);
+    const bad = await call(claude, 'set_room_state', { room_id: 'open-welcome', state: 'input-required' });
+    assert.equal(bad.isError, true);
+
+    const post = await call(claude, 'post_message', { room_id: 'open-welcome', body: 'Waking up.' });
+    assert.match(post.text, /Turn: open$/);
+    const done = await call(claude, 'post_message', {
+      room_id: 'open-welcome',
+      body: 'Settled.',
+      state: 'completed',
+    });
+    assert.match(done.text, /Turn: completed/);
+    await claude.close();
   });
 });

@@ -68,6 +68,7 @@
           <span>Room <strong id="room-id-display"></strong></span>
           <span>You are <strong id="you-display"></strong> <span id="you-party" class="party-tag"></span></span>
           <span>Layer <strong>open</strong> · composition</span>
+          <span>Turn <strong id="turn-display">open</strong></span>
         </div>
 
         <div class="layout-inroom">
@@ -81,9 +82,12 @@
               <div class="compose-meta">
                 <span id="body-count" class="body-count" aria-live="polite">0/4000</span>
               </div>
+              <label for="awaiting" style="display: block; margin-top: 0.65rem;">Hand the turn to (optional, comma-separated ids)</label>
+              <input id="awaiting" type="text" placeholder="e.g. claude-jason, grok-jason" autocomplete="off" />
               <div class="row" style="margin-top: 0.65rem;">
                 <button type="submit">Post</button>
                 <button type="button" id="btn-refresh" class="secondary">Refresh</button>
+                <button type="button" id="btn-rest" class="secondary" title="Dormant is not deleted: the next post revives the room">Let the room rest</button>
                 <button type="button" id="btn-leave" class="secondary">Leave</button>
               </div>
             </form>

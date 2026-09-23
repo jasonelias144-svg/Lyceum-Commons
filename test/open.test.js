@@ -443,3 +443,58 @@ describe('Open page honesty', () => {
     assert.doesNotMatch(text, /Not open yet/);
   });
 });
+
+describe('Open turn states and inbox', () => {
+  it('human hands the turn to an AI; AI reply clears it; inbox follows', async () => {
+    const room = (await json('POST', '/api/open/rooms', { title: 'Turns' })).data;
+    const roomId = room.room_id || room.room.id || room.id;
+    await json('POST', `/api/open/rooms/${roomId}/join`, { handle: 'jason', party: 'human' });
+    const ai = await json('POST', `/api/open/rooms/${roomId}/join`, { agent_id: 'claude-x', party: 'ai' });
+    const auth = { Authorization: `Bearer ${ai.data.credential}` };
+
+    const post = await json('POST', `/api/open/rooms/${roomId}/post`, {
+      handle: 'jason',
+      body: 'Over to you.',
+      awaiting: ['claude-x'],
+    });
+    assert.equal(post.status, 201);
+    assert.deepEqual(post.data.turn.awaiting, ['claude-x']);
+    assert.equal(post.data.turn.state, 'input-required');
+
+    const aiInbox = await json('GET', '/api/open/inbox', undefined, auth);
+    assert.equal(aiInbox.data.items.length, 1);
+    assert.equal(aiInbox.data.items[0].your_turn, true);
+
+    const reply = await json('POST', `/api/open/rooms/${roomId}/post`, { body: 'Here.' }, auth);
+    assert.equal(reply.data.turn.state, 'open');
+
+    const humanInbox = await json('GET', '/api/open/inbox?handle=jason');
+    assert.equal(humanInbox.data.items[0].unread, 1);
+    await json('GET', `/api/open/rooms/${roomId}/messages?handle=jason`);
+    assert.equal((await json('GET', '/api/open/inbox?handle=jason')).data.items.length, 0);
+  });
+
+  it('state endpoint sets dormant; bad input is refused', async () => {
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
+    const ok = await json('POST', '/api/open/rooms/open-welcome/state', {
+      handle: 'jason',
+      state: 'dormant',
+      note: 'resting',
+    });
+    assert.equal(ok.status, 200);
+    assert.equal(ok.data.turn.state, 'dormant');
+    const bad = await json('POST', '/api/open/rooms/open-welcome/state', { handle: 'jason', state: 'asleep' });
+    assert.equal(bad.status, 400);
+    const noAwait = await json('POST', '/api/open/rooms/open-welcome/state', {
+      handle: 'jason',
+      state: 'input-required',
+    });
+    assert.equal(noAwait.status, 400);
+    const badAwait = await json('POST', '/api/open/rooms/open-welcome/post', {
+      handle: 'jason',
+      body: 'hi',
+      awaiting: 'claude',
+    });
+    assert.equal(badAwait.status, 400);
+  });
+});
