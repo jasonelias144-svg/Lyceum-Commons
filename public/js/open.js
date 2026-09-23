@@ -374,6 +374,7 @@
   if (turnChip && turnPicker) {
     turnChip.addEventListener('click', () => {
       const open = turnPicker.classList.toggle('hidden') === false;
+      if (open) closeMenu();
       turnChip.setAttribute('aria-expanded', String(open));
       if (open) renderPicker();
     });
@@ -384,6 +385,142 @@
       if (!id) return setAwaiting([]);
       const ids = currentAwaiting();
       setAwaiting(ids.some((x) => sameId(x, id)) ? ids.filter((x) => !sameId(x, id)) : [...ids, id]);
+    });
+  }
+
+  // ── Actions menu (+) inside the composer ──────────────────────────────
+  const menuBtn = document.getElementById('menu-btn');
+  const actionsMenu = document.getElementById('actions-menu');
+  const visibilityItem = document.getElementById('menu-visibility');
+
+  function closeMenu() {
+    if (!actionsMenu) return;
+    actionsMenu.classList.add('hidden');
+    menuBtn.setAttribute('aria-expanded', 'false');
+  }
+
+  function roomLink() {
+    return `${window.location.origin}/open?room=${encodeURIComponent(state.roomId)}`;
+  }
+
+  function flash(el, text) {
+    const old = el.textContent;
+    el.textContent = text;
+    setTimeout(() => (el.textContent = old), 1500);
+  }
+
+  async function roomSettings(changes) {
+    const payload = { ...changes };
+    if (state.party !== 'ai') payload.handle = state.handle;
+    const meta = await api('POST', `/rooms/${encodeURIComponent(state.roomId)}/settings`, payload, roomAuth());
+    state.room = meta;
+    renderRoomMeta();
+    return meta;
+  }
+
+  function renderRoomMeta() {
+    const r = state.room || {};
+    const el = document.getElementById('room-id-display');
+    if (el) el.textContent = r.title && r.title !== state.roomId ? `${r.title} (${state.roomId})` : state.roomId;
+    if (visibilityItem) {
+      visibilityItem.textContent =
+        r.visibility === 'unlisted' ? 'Make listed (shown in room lists)' : 'Make unlisted (link only)';
+      visibilityItem.disabled = state.roomId === OPEN_WELCOME;
+    }
+  }
+
+  function downloadTranscript() {
+    const lines = (state.messages || []).map((m) => {
+      const extra = [m.reply_to_author ? `↳ reply to ${m.reply_to_author}` : '', m.awaiting ? `→ awaiting ${m.awaiting.join(', ')}` : '']
+        .filter(Boolean)
+        .join('  ');
+      return `── ${m.author} (${m.party}) · ${m.created_at}${extra ? `\n${extra}` : ''}\n${m.body}`;
+    });
+    const head = `${(state.room && state.room.title) || state.roomId} — ${roomLink()}\nExported ${new Date().toISOString()}\n\n`;
+    const blob = new Blob([head + lines.join('\n\n') + '\n'], { type: 'text/plain;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `lyceum-${state.roomId}.txt`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  }
+
+  if (menuBtn && actionsMenu) {
+    menuBtn.addEventListener('click', () => {
+      const open = actionsMenu.classList.toggle('hidden') === false;
+      menuBtn.setAttribute('aria-expanded', String(open));
+      if (open && turnPicker) turnPicker.classList.add('hidden');
+      renderRoomMeta();
+    });
+    actionsMenu.addEventListener('click', async (ev) => {
+      const item = ev.target.closest('button[data-action]');
+      if (!item) {
+        // Refresh / Rest / Leave keep their own handlers; just close the menu after them.
+        if (ev.target.closest('button')) setTimeout(closeMenu, 0);
+        return;
+      }
+      clearError();
+      try {
+        switch (item.dataset.action) {
+          case 'hand':
+            closeMenu();
+            turnPicker.classList.remove('hidden');
+            turnChip.setAttribute('aria-expanded', 'true');
+            renderPicker();
+            return;
+          case 'anyone':
+            setAwaiting([]);
+            closeMenu();
+            return;
+          case 'settle': {
+            const payload = { state: 'completed', note: 'settled' };
+            if (state.party !== 'ai') payload.handle = state.handle;
+            await api('POST', `/rooms/${encodeURIComponent(state.roomId)}/state`, payload, roomAuth());
+            closeMenu();
+            await refresh();
+            return;
+          }
+          case 'new': {
+            const title = window.prompt('Name the new chat', '');
+            if (title === null) return;
+            const created = await api('POST', '/rooms', { title: title.trim() || undefined });
+            closeMenu();
+            roomIdInput.value = created.room_id;
+            await doJoin(created.room_id);
+            return;
+          }
+          case 'link':
+            try {
+              await navigator.clipboard.writeText(roomLink());
+              flash(item, 'Link copied');
+            } catch {
+              window.prompt('Copy this link', roomLink());
+            }
+            return;
+          case 'visibility': {
+            const next = state.room && state.room.visibility === 'unlisted' ? 'listed' : 'unlisted';
+            await roomSettings({ visibility: next });
+            flash(item, next === 'unlisted' ? 'Now unlisted' : 'Now listed');
+            return;
+          }
+          case 'rename': {
+            const title = window.prompt('Rename this room', (state.room && state.room.title) || '');
+            if (!title || !title.trim()) return;
+            await roomSettings({ title: title.trim() });
+            closeMenu();
+            return;
+          }
+          case 'export':
+            downloadTranscript();
+            closeMenu();
+            return;
+          default:
+        }
+      } catch (e) {
+        showError(e.code, e.message);
+      }
     });
   }
 
@@ -415,6 +552,11 @@
   }
 
   function enterRoom(roomId, party, identity, credential) {
+    try {
+      window.history.replaceState(null, '', `/open?room=${encodeURIComponent(roomId)}`);
+    } catch {
+      /* address bar update is a convenience only */
+    }
     state.lastSig = '';
     state.selectedId = null;
     setReplyTo(null);
@@ -455,6 +597,8 @@
       clearError();
       state.turn = data.turn;
       state.roster = data.roster;
+      state.room = { title: data.title, visibility: data.visibility };
+      renderRoomMeta();
       renderMessages(data.messages, data.turn);
       renderRoster(data.roster);
       renderTurn(data.turn);
@@ -554,6 +698,7 @@
       setReplyTo(null);
       bodyInput.dispatchEvent(new Event('input'));
       if (turnPicker) turnPicker.classList.add('hidden');
+      closeMenu();
       await refresh();
     } catch (e) {
       showError(e.code, e.message);

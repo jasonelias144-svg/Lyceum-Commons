@@ -41,6 +41,8 @@ function makeRoom({ id, title }) {
     title,
     layer: 'open',
     format: 'free_thread',
+    /** 'listed' rooms appear in room lists; 'unlisted' ones only to members (link only). */
+    visibility: 'listed',
     created_at: new Date().toISOString(),
     /** @type {Map<string, { id: string, party: 'human'|'ai', joined_at: string, credential?: string }>} */
     roster: new Map(),
@@ -59,16 +61,39 @@ function ensureWelcomeLobby() {
   return room;
 }
 
-function createRoom({ title } = {}) {
+const VISIBILITIES = ['listed', 'unlisted'];
+
+function createRoom({ title, visibility } = {}) {
   const id = newId('orm');
   const room = makeRoom({ id, title: title || 'Open room' });
+  if (visibility === 'unlisted') room.visibility = 'unlisted';
   openRooms.set(id, room);
   return room;
 }
 
-/** All Open rooms, lobby first, then oldest first. */
-function listRooms() {
-  return Array.from(openRooms.values());
+/**
+ * Open rooms, lobby first, then oldest first. With a viewer ({ party, id }), unlisted
+ * rooms are included only if the viewer is a member. Unlisted is not access control:
+ * anyone with the room id can still join (there are no accounts yet).
+ */
+function listRooms(viewer) {
+  const all = Array.from(openRooms.values());
+  if (!viewer) return all;
+  return all.filter((r) => r.visibility !== 'unlisted' || r.roster.has(rosterKey(viewer.party, viewer.id)));
+}
+
+/** Change a room's name and/or visibility. The welcome lobby always stays listed. */
+function updateRoom(room, { title, visibility }) {
+  if (visibility !== undefined) {
+    if (!VISIBILITIES.includes(visibility)) {
+      const err = new Error('invalid_visibility');
+      err.code = 'invalid_visibility';
+      throw err;
+    }
+    if (room.id !== OPEN_WELCOME_ROOM_ID) room.visibility = visibility;
+  }
+  if (title !== undefined && title.trim()) room.title = title.trim().slice(0, 120);
+  return room;
 }
 
 /**
@@ -344,6 +369,8 @@ module.exports = {
   OPEN_WELCOME_TITLE,
   createRoom,
   listRooms,
+  updateRoom,
+  VISIBILITIES,
   addMessage,
   onMessage,
   setTurn,

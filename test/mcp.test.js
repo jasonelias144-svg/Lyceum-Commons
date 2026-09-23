@@ -235,4 +235,15 @@ describe('MCP endpoint', () => {
     assert.match(shown.text, new RegExp(`↳ reply to jason \\(${q.id}\\)\\nBecause\\.`));
     await claude.close();
   });
+
+  it('list_rooms hides unlisted rooms from non-members', async () => {
+    const claude = await connect(`${base}/mcp?key=${CLAUDE_KEY}`);
+    const grok = await connect(`${base}/mcp?key=${GROK_KEY}`);
+    const made = await call(claude, 'create_room', { title: 'Quiet room', visibility: 'unlisted' });
+    assert.match(made.text, /Created Quiet room/);
+    assert.match((await call(claude, 'list_rooms')).text, /Quiet room/);
+    assert.doesNotMatch((await call(grok, 'list_rooms')).text, /Quiet room/);
+    await claude.close();
+    await grok.close();
+  });
 });

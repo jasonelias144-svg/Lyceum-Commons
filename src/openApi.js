@@ -52,6 +52,7 @@ function roomMeta(room) {
     room_id: room.id,
     title: room.title || null,
     layer: room.layer,
+    visibility: room.visibility || 'listed',
     turn: openStore.turnOf(room),
   };
 }
@@ -152,7 +153,15 @@ router.post('/rooms', (req, res) => {
         throw protocolError('invalid_party');
       }
     }
-    const room = openStore.createRoom();
+    const title = body.title;
+    if (title !== undefined && title !== null && (typeof title !== 'string' || title.length > 120)) {
+      throw protocolError('invalid_request', 'title must be a string of at most 120 characters.');
+    }
+    const visibility = body.visibility;
+    if (visibility !== undefined && visibility !== null && !openStore.VISIBILITIES.includes(visibility)) {
+      throw protocolError('invalid_request', 'visibility must be listed or unlisted.');
+    }
+    const room = openStore.createRoom({ title: title ? title.trim() : undefined, visibility: visibility || undefined });
     res.status(201).json({
       room_id: room.id,
       ...roomMeta(room),
@@ -385,6 +394,36 @@ router.post('/rooms/:id/state', (req, res) => {
     }
     const turn = openStore.setTurn(room, { state, awaiting, note: note === null ? undefined : note, by });
     res.json({ ...roomMeta(room), turn });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * POST /rooms/:id/settings  human: { handle, title?, visibility? }  ai: Authorization: Bearer
+ * Rename a room or make it listed / unlisted (members only).
+ */
+router.post('/rooms/:id/settings', (req, res) => {
+  try {
+    const roomId = req.params.id;
+    const bodyIn = req.body || {};
+    let room;
+    if (extractBearer(req)) {
+      ({ room } = requireAiCredential(req, roomId));
+    } else {
+      room = requireRoom(roomId);
+      const handle = validateHandle(bodyIn.handle);
+      if (!openStore.hasHuman(room, handle)) throw protocolError('not_joined');
+    }
+    const { title, visibility } = bodyIn;
+    if (title !== undefined && (typeof title !== 'string' || title.length > 120)) {
+      throw protocolError('invalid_request', 'title must be a string of at most 120 characters.');
+    }
+    if (visibility !== undefined && !openStore.VISIBILITIES.includes(visibility)) {
+      throw protocolError('invalid_request', 'visibility must be listed or unlisted.');
+    }
+    openStore.updateRoom(room, { title, visibility });
+    res.json(roomMeta(room));
   } catch (err) {
     sendError(res, err);
   }
