@@ -88,9 +88,23 @@
   });
   syncJoinFields();
 
-  if (bodyInput && bodyCount) {
+  const sendBtn = document.getElementById('send');
+
+  /** Grow the message box with its text (up to its CSS max-height), like a chat app. */
+  function autosize() {
+    bodyInput.style.height = 'auto';
+    bodyInput.style.height = `${bodyInput.scrollHeight}px`;
+  }
+
+  if (bodyInput) {
     bodyInput.addEventListener('input', () => {
-      bodyCount.textContent = `${bodyInput.value.length}/4000`;
+      const n = bodyInput.value.length;
+      if (bodyCount) {
+        bodyCount.textContent = `${n}/4000`;
+        bodyCount.classList.toggle('hidden', n < 3500);
+      }
+      if (sendBtn) sendBtn.disabled = !bodyInput.value.trim();
+      autosize();
     });
   }
 
@@ -207,6 +221,7 @@
       replyStrip.classList.add('hidden');
       if (awaitingInput) awaitingInput.value = '';
     }
+    updateComposer();
   }
 
   function insertIntoComposer(text) {
@@ -309,6 +324,69 @@
     el.textContent = `${turn.state}${who}${note}`;
   }
 
+  const turnChip = document.getElementById('turn-chip');
+  const turnPicker = document.getElementById('turn-picker');
+
+  function currentAwaiting() {
+    return (document.getElementById('awaiting').value || '')
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+  }
+
+  function setAwaiting(ids) {
+    document.getElementById('awaiting').value = ids.join(', ');
+    updateComposer();
+  }
+
+  /** Chip text and a placeholder that says what posting will do. */
+  function updateComposer() {
+    const ids = currentAwaiting();
+    if (turnChip) {
+      turnChip.textContent = ids.length ? `To: ${ids.join(', ')} ▾` : 'To: anyone ▾';
+      turnChip.classList.toggle('active', ids.length > 0);
+    }
+    const t = state.turn;
+    const myTurn = t && t.state === 'input-required' && (t.awaiting || []).some((a) => sameId(a, me()));
+    bodyInput.placeholder = state.replyTo
+      ? `Reply to ${state.replyTo.author}…`
+      : myTurn
+        ? 'Your turn: reply…'
+        : 'Message…';
+    if (turnPicker && !turnPicker.classList.contains('hidden')) renderPicker();
+  }
+
+  function renderPicker() {
+    const ids = currentAwaiting();
+    const others = (state.roster || []).filter((p) => !sameId(p.id, me()));
+    turnPicker.innerHTML =
+      (others.length
+        ? others
+            .map((p) => {
+              const on = ids.some((x) => sameId(x, p.id));
+              return `<button type="button" class="chip" data-id="${esc(p.id)}" aria-pressed="${on}">${esc(p.id)}</button>`;
+            })
+            .join('')
+        : '<span class="note">Nobody else is in the room yet.</span>') +
+      `<button type="button" class="chip" data-id="" aria-pressed="${ids.length === 0}">anyone</button>`;
+  }
+
+  if (turnChip && turnPicker) {
+    turnChip.addEventListener('click', () => {
+      const open = turnPicker.classList.toggle('hidden') === false;
+      turnChip.setAttribute('aria-expanded', String(open));
+      if (open) renderPicker();
+    });
+    turnPicker.addEventListener('click', (ev) => {
+      const b = ev.target.closest('button[data-id]');
+      if (!b) return;
+      const id = b.dataset.id;
+      if (!id) return setAwaiting([]);
+      const ids = currentAwaiting();
+      setAwaiting(ids.some((x) => sameId(x, id)) ? ids.filter((x) => !sameId(x, id)) : [...ids, id]);
+    });
+  }
+
   function awaitingList() {
     const el = document.getElementById('awaiting');
     if (!el) return undefined;
@@ -376,9 +454,11 @@
       }
       clearError();
       state.turn = data.turn;
+      state.roster = data.roster;
       renderMessages(data.messages, data.turn);
       renderRoster(data.roster);
       renderTurn(data.turn);
+      updateComposer();
     } catch (e) {
       showError(e.code, e.message);
     }
@@ -472,7 +552,8 @@
       }
       bodyInput.value = '';
       setReplyTo(null);
-      if (bodyCount) bodyCount.textContent = '0/4000';
+      bodyInput.dispatchEvent(new Event('input'));
+      if (turnPicker) turnPicker.classList.add('hidden');
       await refresh();
     } catch (e) {
       showError(e.code, e.message);
