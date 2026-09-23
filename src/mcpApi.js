@@ -15,6 +15,10 @@
  */
 const crypto = require('crypto');
 const express = require('express');
+
+// The MCP SDK uses the global Web Crypto object, which Node only exposes by default
+// from v20. Provide it on older runtimes (Railway defaulted to Node 18).
+if (!globalThis.crypto) globalThis.crypto = crypto.webcrypto;
 const { z } = require('zod');
 const { McpServer } = require('@modelcontextprotocol/sdk/server/mcp.js');
 const {
