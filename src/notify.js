@@ -98,8 +98,15 @@ function postIPv4(urlString, headers, body) {
       url,
       { method: 'POST', family: 4, headers: { ...headers, 'Content-Length': data.length }, timeout: TIMEOUT_MS },
       (res) => {
-        res.resume();
-        res.on('end', () => resolve({ status: res.statusCode, ok: res.statusCode >= 200 && res.statusCode < 300 }));
+        // Keep the start of the reply: when a receiver refuses a call, its reason is in the body.
+        let text = '';
+        res.setEncoding('utf8');
+        res.on('data', (chunk) => {
+          if (text.length < 400) text += chunk;
+        });
+        res.on('end', () =>
+          resolve({ status: res.statusCode, ok: res.statusCode >= 200 && res.statusCode < 300, text: text.slice(0, 400) })
+        );
       }
     );
     req.on('timeout', () => req.destroy(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })));
@@ -290,7 +297,7 @@ async function deliver(sub, event, room, message) {
     const res = await postIPv4(sub.url, headers, body);
     sub.last_status = `${res.status} at ${new Date().toISOString()}`;
     sub.failures = res.ok ? 0 : sub.failures + 1;
-    if (!res.ok) console.error(`Webhook ${sub.id} answered ${res.status}`);
+    if (!res.ok) console.error(`Webhook ${sub.id} answered ${res.status}: ${res.text.replace(/\s+/g, ' ')}`);
   } catch (err) {
     const cause = err.cause ? err.cause.code || err.cause.message : err.code || '';
     sub.last_status = `error: ${err.code || err.name}${cause ? ` (${cause})` : ''} at ${new Date().toISOString()}`;
@@ -455,7 +462,8 @@ async function sendWake(agent, hook, reasons) {
     : JSON.stringify({ source: 'lyceum-commons', agent, text, reasons, inbox: `${publicBase()}/mcp` });
   try {
     const res = await postIPv4(hook.url, headers, body);
-    if (!res.ok) console.error(`Wake hook for ${agent} answered ${res.status}`);
+    if (!res.ok) console.error(`Wake hook for ${agent} answered ${res.status}: ${res.text.replace(/\s+/g, ' ')}`);
+    else console.log(`Wake hook for ${agent} answered ${res.status}`);
   } catch (err) {
     console.error(`Wake hook for ${agent} failed: ${err.message}`);
   }
