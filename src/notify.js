@@ -19,6 +19,13 @@
  *    Known limit: the host is resolved again by fetch after the check, so DNS rebinding is not
  *    fully excluded; acceptable while deliveries carry only public room content.
  *
+ * 1b. Web Push (the browser's own notifications, incl. iPhone home-screen web apps):
+ *    subscribeWebPush() stores a PushSubscription from the Open page. Endpoints must belong to a
+ *    known push service (Apple, Google, Mozilla, Microsoft). Payloads are encrypted and signed with
+ *    this server's VAPID keys: LYCEUM_VAPID_PUBLIC_KEY / LYCEUM_VAPID_PRIVATE_KEY, else keys kept in
+ *    the data directory (generated once), else in memory. A 404/410 from the push service means the
+ *    device unsubscribed; the subscription is dropped.
+ *
  * 2. Wake hooks, set only by the server operator:
  *      LYCEUM_WAKE_HOOKS="claude-jason=https://api.anthropic.com/v1/claude_code/routines/<id>/fire|<token>"
  *    When that agent is awaited or @mentioned, Lyceum POSTs to the URL (a Claude Code routine's API
@@ -29,7 +36,10 @@ const crypto = require('crypto');
 const dns = require('dns').promises;
 const http = require('http');
 const https = require('https');
+const fs = require('fs');
 const net = require('net');
+const path = require('path');
+const webpush = require('web-push');
 const openStore = require('./openStore');
 
 const EVENTS = ['turn', 'mention', 'message'];
@@ -288,6 +298,117 @@ async function deliver(sub, event, room, message) {
   if (sub.failures >= MAX_FAILURES) sub.enabled = false;
 }
 
+// ── Web Push ────────────────────────────────────────────────────────────────
+
+const PUSH_HOSTS = [/\.push\.apple\.com$/, /^fcm\.googleapis\.com$/, /^updates\.push\.services\.mozilla\.com$/, /\.notify\.windows\.com$/];
+let vapid = null;
+
+function vapidKeys() {
+  if (vapid) return vapid;
+  if (process.env.LYCEUM_VAPID_PUBLIC_KEY && process.env.LYCEUM_VAPID_PRIVATE_KEY) {
+    vapid = { publicKey: process.env.LYCEUM_VAPID_PUBLIC_KEY, privateKey: process.env.LYCEUM_VAPID_PRIVATE_KEY };
+    return vapid;
+  }
+  const dir = process.env.LYCEUM_DATA_DIR || process.env.RAILWAY_VOLUME_MOUNT_PATH;
+  const file = dir ? path.join(dir, 'lyceum-vapid.json') : null;
+  if (file && fs.existsSync(file)) {
+    vapid = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return vapid;
+  }
+  vapid = webpush.generateVAPIDKeys();
+  if (file) {
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(file, JSON.stringify(vapid), { mode: 0o600 });
+  }
+  return vapid;
+}
+
+function checkPushSubscription(sub) {
+  if (!sub || typeof sub !== 'object' || typeof sub.endpoint !== 'string' || !sub.keys) {
+    throw badUrl('subscription must be a PushSubscription (endpoint and keys).');
+  }
+  const { p256dh, auth } = sub.keys;
+  if (typeof p256dh !== 'string' || typeof auth !== 'string' || p256dh.length > 200 || auth.length > 100) {
+    throw badUrl('subscription keys are missing or malformed.');
+  }
+  let url;
+  try {
+    url = new URL(sub.endpoint);
+  } catch {
+    throw badUrl('subscription endpoint is not a URL.');
+  }
+  if (url.protocol !== 'https:' || sub.endpoint.length > 1000 || !PUSH_HOSTS.some((re) => re.test(url.hostname))) {
+    throw badUrl('subscription endpoint is not a known push service.');
+  }
+  return { endpoint: sub.endpoint, keys: { p256dh, auth } };
+}
+
+/** Store (or replace, for the same device endpoint) a Web Push subscription. */
+function subscribeWebPush({ party, who, subscription, events }) {
+  const push = checkPushSubscription(subscription);
+  const wanted = events && events.length ? events : ['turn', 'mention'];
+  if (!wanted.every((e) => EVENTS.includes(e))) throw badUrl(`events must be drawn from: ${EVENTS.join(', ')}.`);
+  for (const [id, s] of subscriptions) {
+    if (s.push && s.push.endpoint === push.endpoint) subscriptions.delete(id);
+  }
+  if (subscriptions.size >= MAX_SUBSCRIPTIONS) throw badUrl('This server has reached its webhook limit. Try again later.');
+  const mine = Array.from(subscriptions.values()).filter((s) => s.party === party && s.who === who);
+  if (mine.length >= MAX_SUBSCRIPTIONS_PER_PARTICIPANT) {
+    throw badUrl(`At most ${MAX_SUBSCRIPTIONS_PER_PARTICIPANT} notification targets per participant.`);
+  }
+  const sub = {
+    id: `hook_${crypto.randomBytes(6).toString('hex')}`,
+    secret: crypto.randomBytes(24).toString('hex'),
+    party,
+    who,
+    kind: 'webpush',
+    url: `${new URL(push.endpoint).origin}/…`,
+    push,
+    events: Array.from(new Set(wanted)),
+    created_at: new Date().toISOString(),
+    enabled: true,
+    failures: 0,
+    sent: [],
+    last_status: null,
+  };
+  subscriptions.set(sub.id, sub);
+  return sub;
+}
+
+const ipv4Agent = new https.Agent({ family: 4, keepAlive: true });
+let sendWebPush = (push, body, options) => webpush.sendNotification(push, body, options);
+
+async function deliverWebPush(sub, event, room, message) {
+  const text = message.body.replace(/\s+/g, ' ').trim();
+  const body = JSON.stringify({
+    title: HEADLINE[event](message, room),
+    body: text.length > 180 ? `${text.slice(0, 180)}…` : text,
+    url: roomUrl(room),
+    tag: `lyceum-${room.id}`,
+  });
+  const keys = vapidKeys();
+  try {
+    const res = await sendWebPush(sub.push, body, {
+      TTL: 24 * 3600,
+      urgency: event === 'message' ? 'normal' : 'high',
+      timeout: TIMEOUT_MS,
+      agent: ipv4Agent,
+      vapidDetails: { subject: publicBase(), publicKey: keys.publicKey, privateKey: keys.privateKey },
+    });
+    sub.last_status = `${(res && res.statusCode) || 201} at ${new Date().toISOString()}`;
+    sub.failures = 0;
+  } catch (err) {
+    if (err.statusCode === 404 || err.statusCode === 410) {
+      subscriptions.delete(sub.id); // the device unsubscribed or the subscription expired
+      return;
+    }
+    sub.last_status = `error: ${err.statusCode || err.code || err.name} at ${new Date().toISOString()}`;
+    sub.failures += 1;
+    console.error(`Web push ${sub.id} failed: ${err.statusCode || ''} ${err.body || err.message}`);
+    if (sub.failures >= MAX_FAILURES) sub.enabled = false;
+  }
+}
+
 // ── Wake hooks (operator-configured) ────────────────────────────────────────
 
 function loadWakeHooks(env = process.env.LYCEUM_WAKE_HOOKS) {
@@ -358,7 +479,7 @@ function onMessage(room, message) {
     if (!event) continue;
     const wanted = EVENTS.slice(EVENTS.indexOf(event)).find((e) => sub.events.includes(e));
     if (!wanted) continue;
-    deliver(sub, wanted, room, message).catch(() => {});
+    (sub.push ? deliverWebPush : deliver)(sub, wanted, room, message).catch(() => {});
   }
   const hooks = loadWakeHooks();
   for (const agent of hooks.keys()) {
@@ -384,6 +505,11 @@ module.exports = {
   list,
   describe,
   loadWakeHooks,
+  subscribeWebPush,
+  vapidPublicKey: () => vapidKeys().publicKey,
+  _setWebPushSender: (fn) => {
+    sendWebPush = fn;
+  },
   isPrivateAddress,
   isNtfyHost,
   clearAll,

@@ -11,6 +11,17 @@
   // Notification links point at /open?room=<id>: prefill the room to join.
   const linkedRoom = new URLSearchParams(window.location.search).get('room');
   if (linkedRoom && roomIdInput) roomIdInput.value = linkedRoom;
+  // Returning visitors (and the Home Screen app) start with their name and last room filled in.
+  try {
+    const remembered = JSON.parse(localStorage.getItem('lyceum.me') || 'null');
+    if (remembered) {
+      const h = document.getElementById('handle');
+      if (h && !h.value) h.value = remembered.handle || '';
+      if (!linkedRoom && remembered.room && roomIdInput) roomIdInput.value = remembered.room;
+    }
+  } catch {
+    /* storage unavailable */
+  }
   const threadEl = document.getElementById('thread');
   const rosterEl = document.getElementById('roster-list');
   const bodyInput = document.getElementById('body');
@@ -447,12 +458,109 @@
     setTimeout(() => URL.revokeObjectURL(a.href), 1000);
   }
 
+  // ── Notifications on this device (Web Push) ───────────────────────────
+  const notifyItem = document.getElementById('menu-notify');
+  const PUSH_KEY = 'lyceum.push';
+  const isIOS = /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isStandalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+
+  function store(key, value) {
+    try {
+      if (value === undefined) localStorage.removeItem(key);
+      else localStorage.setItem(key, JSON.stringify(value));
+    } catch {
+      /* private mode: remembering is only a convenience */
+    }
+  }
+  function recall(key) {
+    try {
+      return JSON.parse(localStorage.getItem(key) || 'null');
+    } catch {
+      return null;
+    }
+  }
+
+  let swReg = null;
+  if ('serviceWorker' in navigator) {
+    navigator.serviceWorker
+      .register('/sw.js')
+      .then((reg) => (swReg = reg))
+      .catch(() => {});
+  }
+
+  function renderNotifyItem() {
+    if (!notifyItem) return;
+    const saved = recall(PUSH_KEY);
+    notifyItem.textContent =
+      saved && saved.who === me() ? `Turn off notifications (${saved.who})` : 'Turn on notifications';
+  }
+
+  function urlBase64ToUint8Array(base64) {
+    const pad = '='.repeat((4 - (base64.length % 4)) % 4);
+    const raw = atob((base64 + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  }
+
+  async function toggleNotifications(item) {
+    const saved = recall(PUSH_KEY);
+    if (saved && saved.who === me()) {
+      try {
+        await api('DELETE', `/notifications/${encodeURIComponent(saved.id)}`, { secret: saved.secret });
+      } catch {
+        /* already gone on the server */
+      }
+      const reg = swReg || (await navigator.serviceWorker.ready);
+      const sub = reg && (await reg.pushManager.getSubscription());
+      if (sub) await sub.unsubscribe();
+      store(PUSH_KEY, undefined);
+      flash(item, 'Notifications off');
+      return;
+    }
+    if (!('serviceWorker' in navigator) || !('PushManager' in window) || !('Notification' in window)) {
+      if (isIOS && !isStandalone) {
+        window.alert(
+          'On iPhone, notifications work once Lyceum is on your Home Screen:\n\n' +
+            '1. Tap the Share button in Safari\n2. Choose "Add to Home Screen"\n' +
+            '3. Open Lyceum from the new icon, join the room, and choose this again.'
+        );
+      } else {
+        window.alert('This browser does not support web notifications.');
+      }
+      return;
+    }
+    const permission = await Notification.requestPermission();
+    if (permission !== 'granted') {
+      window.alert('Notifications are blocked for this site. Allow them in your settings, then try again.');
+      return;
+    }
+    const { publicKey } = await api('GET', '/push/key');
+    const reg = swReg || (await navigator.serviceWorker.ready);
+    const withTimeout = (promise) =>
+      Promise.race([
+        promise,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(Object.assign(new Error('The browser did not finish subscribing. Try again.'), { code: 'push_timeout' })), 20000)
+        ),
+      ]);
+    const sub =
+      (await reg.pushManager.getSubscription()) ||
+      (await withTimeout(
+        reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) })
+      ));
+    const payload = { subscription: sub.toJSON(), events: ['turn', 'mention'] };
+    if (state.party !== 'ai') payload.handle = state.handle;
+    const created = await api('POST', '/push/subscribe', payload, roomAuth());
+    store(PUSH_KEY, { id: created.id, secret: created.secret, who: me() });
+    flash(item, 'Notifications on');
+  }
+
   if (menuBtn && actionsMenu) {
     menuBtn.addEventListener('click', () => {
       const open = actionsMenu.classList.toggle('hidden') === false;
       menuBtn.setAttribute('aria-expanded', String(open));
       if (open && turnPicker) turnPicker.classList.add('hidden');
       renderRoomMeta();
+      renderNotifyItem();
     });
     actionsMenu.addEventListener('click', async (ev) => {
       const item = ev.target.closest('button[data-action]');
@@ -512,6 +620,10 @@
             closeMenu();
             return;
           }
+          case 'notify':
+            await toggleNotifications(item);
+            setTimeout(renderNotifyItem, 1600);
+            return;
           case 'export':
             downloadTranscript();
             closeMenu();
@@ -552,6 +664,7 @@
   }
 
   function enterRoom(roomId, party, identity, credential) {
+    if (party === 'human') store('lyceum.me', { handle: identity, room: roomId });
     try {
       window.history.replaceState(null, '', `/open?room=${encodeURIComponent(roomId)}`);
     } catch {
@@ -753,4 +866,16 @@
     rosterEl.innerHTML = '';
     bodyInput.value = '';
   });
+
+  // Opened from a notification link or the Home Screen icon with a remembered name: go straight in.
+  try {
+    const remembered = JSON.parse(localStorage.getItem('lyceum.me') || 'null');
+    const params = new URLSearchParams(window.location.search);
+    const standalone = window.matchMedia('(display-mode: standalone)').matches || window.navigator.standalone === true;
+    if (remembered && remembered.handle && selectedJoinParty() === 'human' && (params.get('room') || standalone)) {
+      doJoin(roomIdInput.value.trim() || OPEN_WELCOME).catch((e) => showError(e.code, e.message));
+    }
+  } catch {
+    /* storage unavailable: the lobby form still works */
+  }
 })();

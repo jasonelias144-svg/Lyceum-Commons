@@ -226,3 +226,54 @@ describe('wake hooks', () => {
     assert.deepEqual(Array.from(hooks.keys()), ['a']);
   });
 });
+
+describe('web push', () => {
+  const sub = (endpoint) => ({ endpoint, keys: { p256dh: 'BPk3yK0test', auth: 'authsecret' } });
+
+  it('serves a public key, accepts only real push services, and delivers turn notifications', async () => {
+    const key = await json('GET', '/api/open/push/key');
+    assert.equal(key.status, 200);
+    assert.match(key.data.publicKey, /^[A-Za-z0-9_-]{80,}$/);
+
+    const bad = await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: sub('https://evil.example/x') });
+    assert.equal(bad.status, 400);
+    const missing = await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: { endpoint: 'https://web.push.apple.com/x' } });
+    assert.equal(missing.status, 400);
+
+    const sent = [];
+    notify._setWebPushSender(async (push, body, options) => {
+      sent.push({ push, body: JSON.parse(body), options });
+      return { statusCode: 201 };
+    });
+    const ok = await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: sub('https://web.push.apple.com/QWxpY2U') });
+    assert.equal(ok.status, 201);
+    assert.ok(ok.data.secret);
+
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'ana', party: 'human' });
+    await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'ana', body: 'Over to you.', awaiting: ['jason'] });
+    await waitFor(() => sent.length === 1);
+    assert.equal(sent[0].push.endpoint, 'https://web.push.apple.com/QWxpY2U');
+    assert.equal(sent[0].body.title, 'Your turn in Open welcome lobby (from ana)');
+    assert.equal(sent[0].body.body, 'Over to you.');
+    assert.match(sent[0].body.url, /\/open\?room=open-welcome$/);
+    assert.equal(sent[0].options.urgency, 'high');
+    assert.equal(sent[0].options.vapidDetails.publicKey, key.data.publicKey);
+
+    // Same device subscribing again replaces, not duplicates.
+    await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: sub('https://web.push.apple.com/QWxpY2U') });
+    assert.equal(notify.list('human', 'jason').length, 1);
+  });
+
+  it('drops a subscription the push service reports as gone (410)', async () => {
+    notify._setWebPushSender(async () => {
+      const err = new Error('gone');
+      err.statusCode = 410;
+      throw err;
+    });
+    await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: sub('https://fcm.googleapis.com/fcm/send/abc') });
+    assert.equal(notify.list('human', 'jason').length, 1);
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'ana', party: 'human' });
+    await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'ana', body: 'hi @jason' });
+    await waitFor(() => notify.list('human', 'jason').length === 0);
+  });
+});
