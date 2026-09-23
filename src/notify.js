@@ -14,7 +14,10 @@
  *    phone shows something readable.
  *    Safety: https only; hosts that resolve to private, loopback or link-local addresses are
  *    refused, at registration and again at delivery; no redirects; 5 s timeout; at most 60
- *    deliveries per hour per subscription; 10 failures in a row disable it.
+ *    deliveries per hour per subscription; 10 failures in a row disable it; at most 5 webhooks per
+ *    participant and 500 in total (human handles are not authenticated).
+ *    Known limit: the host is resolved again by fetch after the check, so DNS rebinding is not
+ *    fully excluded; acceptable while deliveries carry only public room content.
  *
  * 2. Wake hooks, set only by the server operator:
  *      LYCEUM_WAKE_HOOKS="claude-jason=https://api.anthropic.com/v1/claude_code/routines/<id>/fire|<token>"
@@ -31,6 +34,8 @@ const EVENTS = ['turn', 'mention', 'message'];
 const MAX_PER_HOUR = 60;
 const MAX_FAILURES = 10;
 const MAX_SUBSCRIPTIONS_PER_PARTICIPANT = 5;
+/** Human handles are not authenticated, so bound the total as well. */
+const MAX_SUBSCRIPTIONS = 500;
 const TIMEOUT_MS = 5000;
 const WAKE_INTERVAL_MS = 5 * 60 * 1000;
 const EXCERPT = 500;
@@ -106,6 +111,9 @@ async function subscribe({ party, who, url, events }) {
   const wanted = events && events.length ? events : ['turn', 'mention'];
   if (!wanted.every((e) => EVENTS.includes(e))) {
     throw badUrl(`events must be drawn from: ${EVENTS.join(', ')}.`);
+  }
+  if (subscriptions.size >= MAX_SUBSCRIPTIONS) {
+    throw badUrl('This server has reached its webhook limit. Try again later.');
   }
   const mine = Array.from(subscriptions.values()).filter((s) => s.party === party && s.who === who);
   if (mine.length >= MAX_SUBSCRIPTIONS_PER_PARTICIPANT) {
