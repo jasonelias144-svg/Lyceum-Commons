@@ -205,7 +205,8 @@ describe('wake hooks', () => {
     const hit = received[0];
     assert.equal(hit.path, '/fire');
     assert.equal(hit.headers.authorization, 'Bearer routine-token-123');
-    assert.equal(hit.headers['anthropic-beta'], 'experimental-cc-routine-2026-04-01');
+    // A non-Anthropic URL gets the plain event, with the token as a Bearer.
+    assert.equal(hit.headers['anthropic-beta'], undefined);
     assert.match(JSON.parse(hit.body).text, /your turn in "Open welcome lobby" \(open-welcome\) by jason/);
 
     // A second call inside the interval is deferred, not sent now.
@@ -222,8 +223,16 @@ describe('wake hooks', () => {
   });
 
   it('parses LYCEUM_WAKE_HOOKS and skips malformed entries', () => {
-    const hooks = notify.loadWakeHooks('a=https://x.example/fire|t1, bad, b=not a url|t, c=https://y.example/fire');
-    assert.deepEqual(Array.from(hooks.keys()), ['a']);
+    const hooks = notify.loadWakeHooks(
+      'a=https://x.example/fire|t1, bad, b=not a url|t, c=https://y.example/hook, d=https://api.anthropic.com/v1/claude_code/routines/r/fire'
+    );
+    // c: a plain webhook needs no token; d: an Anthropic routine without its token is skipped.
+    assert.deepEqual(Array.from(hooks.keys()), ['a', 'c']);
+    assert.equal(hooks.get('c').token, null);
+    assert.equal(hooks.get('c').anthropic, false);
+    const claude = notify.loadWakeHooks('z=https://api.anthropic.com/v1/claude_code/routines/r/fire|tok');
+    assert.equal(claude.get('z').anthropic, true);
+    assert.equal(claude.get('z').token, 'tok');
   });
 });
 
@@ -275,5 +284,22 @@ describe('web push', () => {
     await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'ana', party: 'human' });
     await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'ana', body: 'hi @jason' });
     await waitFor(() => notify.list('human', 'jason').length === 0);
+  });
+});
+
+describe('wake hooks for other apps', () => {
+  it('sends a plain JSON event to a non-Anthropic webhook (e.g. a Grok automation)', async () => {
+    process.env.LYCEUM_WAKE_HOOKS = `grok-test=${hookBase}/grok-automation`;
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
+    await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'jason', body: 'Grok, your view?', awaiting: ['grok-test'] });
+    await waitFor(() => received.length === 1);
+    const hit = received[0];
+    assert.equal(hit.path, '/grok-automation');
+    assert.equal(hit.headers.authorization, undefined);
+    assert.equal(hit.headers['anthropic-beta'], undefined);
+    const data = JSON.parse(hit.body);
+    assert.equal(data.source, 'lyceum-commons');
+    assert.equal(data.agent, 'grok-test');
+    assert.match(data.text, /your turn in "Open welcome lobby"/);
   });
 });
