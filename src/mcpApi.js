@@ -26,6 +26,7 @@ const {
 } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const openStore = require('./openStore');
 const notify = require('./notify');
+const { parseAddressLine, slug } = require('./addressLine');
 
 const router = express.Router();
 
@@ -202,6 +203,43 @@ function buildServer(agentId) {
         state,
         reply_to,
       });
+      return text(`Posted ${m.id} to ${room.title} [${room.id}] as ${agentId}.\n${turnLine(room)}`);
+    }
+  );
+
+  server.registerTool(
+    'send',
+    {
+      title: 'Send an address line',
+      description:
+        'Post from a single typed line, passed exactly as the person wrote it: "lc #room @name re:msg_id message". #room is a room id or title (default: your last room, else the lobby); each @name hands them the turn (@room leaves it open to anyone); re:msg_… replies to that message; the rest is the message. Use this whenever a message starts with "lc".',
+      inputSchema: { line: z.string().min(1).max(MAX_TURN_CHARS + 400) },
+    },
+    async ({ line }) => {
+      const a = parseAddressLine(line);
+      if (!a.body) return fail('The line has an address but no message.');
+      let room = null;
+      if (a.room) {
+        room =
+          openStore.getRoom(a.room) ||
+          openStore
+            .listRooms({ party: 'ai', id: agentId })
+            .find((r) => r.title.toLowerCase() === a.room.toLowerCase() || slug(r.title) === slug(a.room)) ||
+          null;
+        if (!room) return fail(`No room "${a.room}". Use list_rooms to see room ids and titles.`);
+      } else {
+        room = openStore.getRoom(openStore.lastRoomOf('ai', agentId)) || openStore.getRoom(openStore.OPEN_WELCOME_ROOM_ID);
+      }
+      const err = ensureJoined(room, agentId);
+      if (err) return fail(err);
+      const m = openStore.addMessage(room, {
+        author: agentId,
+        party: 'ai',
+        body: a.body,
+        awaiting: a.openToAll ? undefined : a.awaiting,
+        reply_to: a.replyTo || undefined,
+      });
+      if (a.openToAll) openStore.setTurn(room, { state: 'open', awaiting: [], by: agentId });
       return text(`Posted ${m.id} to ${room.title} [${room.id}] as ${agentId}.\n${turnLine(room)}`);
     }
   );

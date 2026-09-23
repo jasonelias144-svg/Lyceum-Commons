@@ -16,6 +16,13 @@ const OPEN_WELCOME_TITLE = 'Open welcome lobby';
 const openRooms = new Map();
 /** @type {Map<string, { room_id: string, agent_id: string }>} */
 const credentials = new Map();
+/** Each participant's most recent room ("party:id" → room id), the default for address lines. */
+const lastRooms = new Map();
+
+function lastRoomOf(party, id) {
+  return lastRooms.get(rosterKey(party, id)) || null;
+}
+
 /** Called after every post (notifications). A failing listener never breaks posting. */
 const messageListeners = [];
 
@@ -207,6 +214,7 @@ function addMessage(room, { author, party, body, turn_id, status, awaiting, stat
   if (state) nextState = state;
   setTurn(room, { state: nextState, awaiting: nextAwaiting, note: null, by: author });
   room.seen[rosterKey(party, author)] = message.id;
+  lastRooms.set(rosterKey(party, author), room.id);
   for (const fn of messageListeners) {
     try {
       fn(room, message);
@@ -372,6 +380,7 @@ module.exports = {
   updateRoom,
   VISIBILITIES,
   addMessage,
+  lastRoomOf,
   onMessage,
   setTurn,
   turnOf,
