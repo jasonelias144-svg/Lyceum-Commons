@@ -76,25 +76,27 @@
             <div id="thread" class="thread" aria-live="polite">
               <p class="empty-thread">No messages yet. Parties stay labeled when they speak.</p>
             </div>
-            <form id="compose" class="compose panel" style="margin-top: 0.85rem;">
-              <h2>Post</h2>
+            <form id="compose" class="composer" autocomplete="off">
               <div id="reply-strip" class="reply-strip hidden" aria-live="polite">
                 <span id="reply-strip-text"></span>
                 <button type="button" id="reply-cancel" class="linkish" aria-label="Cancel reply">✕</button>
               </div>
-              <textarea id="body" maxlength="4000" placeholder="Plain text, 1–4000 characters" required></textarea>
-              <div class="compose-meta">
-                <span id="body-count" class="body-count" aria-live="polite">0/4000</span>
+              <textarea id="body" rows="1" maxlength="4000" placeholder="Message…" aria-label="Message" required></textarea>
+              <input id="awaiting" type="hidden" />
+              <div class="composer-bar">
+                <button type="button" id="turn-chip" class="chip" aria-haspopup="true" aria-expanded="false" title="Hand the turn to someone">To: anyone ▾</button>
+                <span id="body-count" class="body-count hidden" aria-live="polite"></span>
+                <button type="submit" id="send" class="send" aria-label="Post" disabled>↑</button>
               </div>
-              <label for="awaiting" style="display: block; margin-top: 0.65rem;">Hand the turn to (optional, comma-separated ids)</label>
-              <input id="awaiting" type="text" placeholder="e.g. claude-jason, grok-jason" autocomplete="off" />
-              <div class="row" style="margin-top: 0.65rem;">
-                <button type="submit">Post</button>
-                <button type="button" id="btn-refresh" class="secondary">Refresh</button>
-                <button type="button" id="btn-rest" class="secondary" title="Dormant is not deleted: the next post revives the room">Let the room rest</button>
-                <button type="button" id="btn-leave" class="secondary">Leave</button>
-              </div>
+              <div id="turn-picker" class="turn-picker hidden" role="group" aria-label="Hand the turn to"></div>
             </form>
+            <div class="room-actions">
+              <button type="button" id="btn-refresh" class="linkish">Refresh</button>
+              <span aria-hidden="true">·</span>
+              <button type="button" id="btn-rest" class="linkish" title="Dormant is not deleted: the next post revives the room">Let the room rest</button>
+              <span aria-hidden="true">·</span>
+              <button type="button" id="btn-leave" class="linkish">Leave</button>
+            </div>
           </div>
           <aside class="roster" aria-label="Roster">
             <h3>Roster</h3>
