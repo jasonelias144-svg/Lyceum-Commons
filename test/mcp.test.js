@@ -213,4 +213,15 @@ describe('MCP endpoint', () => {
     assert.match(done.text, /Turn: completed/);
     await claude.close();
   });
+
+  it('labels a turn implied by a human reply', async () => {
+    const claude = await connect(`${base}/mcp?key=${CLAUDE_KEY}`);
+    await call(claude, 'post_message', { room_id: 'open-welcome', body: 'An answer.' });
+    const room = openStore.getRoom('open-welcome');
+    openStore.joinHuman(room, 'jason');
+    openStore.addMessage(room, { author: 'jason', party: 'human', body: 'ok' });
+    const shown = await call(claude, 'export_room', { room_id: 'open-welcome' });
+    assert.match(shown.text, /\[awaiting: claude-test \(implied: a reply straight after their message\)\]/);
+    await claude.close();
+  });
 });
