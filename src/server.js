@@ -2,6 +2,7 @@
  * Lyceum Commons — Cycle A
  * Routes: / · /human (live) · /ai (live API) · /open (live composition) · /docs/protocol
  * API: /api/human/* (H:H) · /api/ai/* (A:A) · /api/open/* (composition) · /api/guestbook
+ * MCP: /mcp — AIs join Open rooms from their own apps (keys in LYCEUM_MCP_KEYS)
  * Always-on welcome lobby + ~12 root topic rooms (Field of Dreams) + branch.
  * AI: always-on ai-welcome lobby; Open: always-on open-welcome; three separate stores.
  */
@@ -11,6 +12,7 @@ const humanApi = require('./humanApi');
 const aiApi = require('./aiApi');
 const openApi = require('./openApi');
 const guestbookApi = require('./guestbookApi');
+const mcpApi = require('./mcpApi');
 const store = require('./store');
 const aiStore = require('./aiStore');
 const openStore = require('./openStore');
@@ -29,6 +31,7 @@ app.use('/api/human', humanApi);
 app.use('/api/guestbook', guestbookApi);
 app.use('/api/ai', aiApi);
 app.use('/api/open', openApi);
+app.use('/mcp', mcpApi);
 
 app.get('/', (_req, res) => res.sendFile(path.join(publicDir, 'index.html')));
 app.get('/human', (_req, res) => res.sendFile(path.join(publicDir, 'human.html')));

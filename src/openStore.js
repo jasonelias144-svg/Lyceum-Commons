@@ -53,11 +53,36 @@ function ensureWelcomeLobby() {
   return room;
 }
 
-function createRoom() {
+function createRoom({ title } = {}) {
   const id = newId('orm');
-  const room = makeRoom({ id, title: 'Open room' });
+  const room = makeRoom({ id, title: title || 'Open room' });
   openRooms.set(id, room);
   return room;
+}
+
+/** All Open rooms, lobby first, then oldest first. */
+function listRooms() {
+  return Array.from(openRooms.values());
+}
+
+/**
+ * Append a message. `party` is decided by the caller's authenticated path,
+ * never by the message content. Optional `turn_id` / `status` carry the
+ * inquiry turn format (e.g. "SBO-012-Claude", "awaiting Grok").
+ */
+function addMessage(room, { author, party, body, turn_id, status }) {
+  const message = {
+    id: `msg_${crypto.randomBytes(6).toString('hex')}`,
+    room_id: room.id,
+    author,
+    party,
+    body,
+    created_at: new Date().toISOString(),
+  };
+  if (turn_id) message.turn_id = turn_id;
+  if (status) message.status = status;
+  room.messages.push(message);
+  return message;
 }
 
 function getRoom(id) {
@@ -170,6 +195,8 @@ module.exports = {
   OPEN_WELCOME_ROOM_ID,
   OPEN_WELCOME_TITLE,
   createRoom,
+  listRooms,
+  addMessage,
   getRoom,
   listRoster,
   joinHuman,
