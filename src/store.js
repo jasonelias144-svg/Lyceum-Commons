@@ -306,6 +306,15 @@ function addGuestbookSignature({ handle, body }) {
   return signature;
 }
 
+/** Snapshot helpers (persist.js). */
+function _getGuestbook() {
+  return guestbook;
+}
+
+function _setGuestbook(list) {
+  guestbook = Array.isArray(list) ? list : [];
+}
+
 function clearAll() {
   rooms.clear();
   guestbook = [];
@@ -343,4 +352,6 @@ module.exports = {
   addGuestbookSignature,
   clearAll,
   _rooms: rooms,
+  _getGuestbook,
+  _setGuestbook,
 };
