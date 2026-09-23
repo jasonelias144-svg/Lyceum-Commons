@@ -303,3 +303,28 @@ describe('wake hooks for other apps', () => {
     assert.match(data.text, /your turn in "Open welcome lobby"/);
   });
 });
+
+describe('standard webhooks signing', () => {
+  it('matches the Standard Webhooks spec example', () => {
+    const h = notify.standardWebhookHeaders(
+      'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw',
+      '{"test": 2432232314}',
+      'msg_p5jXN8AQM9LWM0D4loKWxJek',
+      1614265330
+    );
+    assert.equal(h['webhook-signature'], 'v1,g0hM9SsE+OTPJTGt/tmIKtSyZlE3uFJELVlNIOLJ1OE=');
+    assert.equal(h['webhook-timestamp'], '1614265330');
+  });
+
+  it('signs wake calls when the hook token is a whsec_ secret', async () => {
+    const secret = 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
+    process.env.LYCEUM_WAKE_HOOKS = `grok-test=${hookBase}/grok|${secret}`;
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
+    await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'jason', body: 'hi', awaiting: ['grok-test'] });
+    await waitFor(() => received.length === 1);
+    const hit = received[0];
+    assert.equal(hit.headers.authorization, undefined);
+    const expected = notify.standardWebhookHeaders(secret, hit.body, hit.headers['webhook-id'], Number(hit.headers['webhook-timestamp']));
+    assert.equal(hit.headers['webhook-signature'], expected['webhook-signature']);
+  });
+});

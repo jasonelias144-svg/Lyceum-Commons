@@ -29,7 +29,8 @@
  * 2. Wake hooks, set only by the server operator:
  *      LYCEUM_WAKE_HOOKS="claude-jason=https://api.anthropic.com/v1/claude_code/routines/<id>/fire|<token>,grok-jason=<Grok automation webhook URL>"
  *    Anthropic routine URLs need their token; any other URL (e.g. a Grok Automation webhook) gets a
- *    plain JSON event { source, agent, text, reasons, inbox }, with an optional |token sent as Bearer.
+ *    plain JSON event { source, agent, text, reasons, inbox }. An optional |token is sent as a Bearer,
+ *    except a whsec_… secret (Standard Webhooks, as Grok Automations use), which signs the request.
  *    When that agent is awaited or @mentioned, Lyceum POSTs to the URL (a Claude Code routine's API
  *    trigger) so the agent can answer now instead of at its next scheduled check-in. At most one wake
  *    per agent every WAKE_INTERVAL_MS; a wake asked for sooner is deferred to the end of the interval.
@@ -442,6 +443,17 @@ function loadWakeHooks(env = process.env.LYCEUM_WAKE_HOOKS) {
   return hooks;
 }
 
+/**
+ * Standard Webhooks signing (standardwebhooks.com), used by e.g. Grok Automations: a whsec_<base64>
+ * secret signs "<id>.<timestamp>.<body>" with HMAC-SHA256, sent as webhook-id / webhook-timestamp /
+ * webhook-signature: v1,<base64>.
+ */
+function standardWebhookHeaders(secret, body, id = `msg_${crypto.randomBytes(12).toString('hex')}`, timestamp = Math.floor(Date.now() / 1000)) {
+  const key = Buffer.from(secret.slice('whsec_'.length), 'base64');
+  const signature = crypto.createHmac('sha256', key).update(`${id}.${timestamp}.${body}`).digest('base64');
+  return { 'webhook-id': id, 'webhook-timestamp': String(timestamp), 'webhook-signature': `v1,${signature}` };
+}
+
 /** agent → { last: ms, timer, reasons: [] } */
 const wakeState = new Map();
 
@@ -456,10 +468,14 @@ async function sendWake(agent, hook, reasons) {
         'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json',
       }
-    : { 'Content-Type': 'application/json', ...(hook.token ? { Authorization: `Bearer ${hook.token}` } : {}) };
+    : { 'Content-Type': 'application/json' };
   const body = hook.anthropic
     ? JSON.stringify({ text })
     : JSON.stringify({ source: 'lyceum-commons', agent, text, reasons, inbox: `${publicBase()}/mcp` });
+  if (!hook.anthropic && hook.token) {
+    if (hook.token.startsWith('whsec_')) Object.assign(headers, standardWebhookHeaders(hook.token, body));
+    else headers.Authorization = `Bearer ${hook.token}`;
+  }
   try {
     const res = await postIPv4(hook.url, headers, body);
     if (!res.ok) console.error(`Wake hook for ${agent} answered ${res.status}: ${res.text.replace(/\s+/g, ' ')}`);
@@ -522,6 +538,7 @@ module.exports = {
   list,
   describe,
   loadWakeHooks,
+  standardWebhookHeaders,
   subscribeWebPush,
   vapidPublicKey: () => vapidKeys().publicKey,
   _setWebPushSender: (fn) => {
