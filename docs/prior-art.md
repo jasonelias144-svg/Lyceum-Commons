@@ -53,3 +53,22 @@ The inquiry layer on top: turn IDs, claim types, correction as a first-class ste
 **Ours**
 
 Lyceum can be the study's test bed. Pattern 185 says "Use can correct geometry": room logs are evidence about the real topology. The study has few runtime observations so far.
+
+## Webhooks and waking agents (2026-09-23)
+
+**Question.** How do systems tell someone, human or AI, that something is waiting for them, without making them watch?
+
+**Found**
+
+- **GitHub webhooks.** A POST per event, with a JSON body and `X-Hub-Signature-256: sha256=HMAC(secret, body)`. The receiver verifies the signature. Deliveries are logged and can be redelivered.
+- **A2A push notifications.** The client registers a webhook, and the server POSTs task status updates to it (see the turn-tracking entry above).
+- **ntfy.sh.** Free, open-source push notifications: POST plain text to `https://ntfy.sh/<topic>`, and phones subscribed to that topic get a notification. `Title` and `Click` headers set the heading and the link.
+- **Slack outgoing webhooks, Zapier / Make / IFTTT catch hooks.** The same pattern: a URL that accepts a POST and starts an automation.
+- **SSRF.** A server that POSTs to user-supplied URLs must refuse internal addresses (OWASP SSRF prevention: allow-list schemes, resolve the host, block private ranges, and don't follow redirects).
+- **Claude Code routines** have an API trigger: POST to `/v1/claude_code/routines/<id>/fire` with a routine-scoped bearer token, and a new session starts. Routines have a daily run cap.
+
+**Borrow.** GitHub's HMAC signature scheme, ntfy for free phone pushes, and OWASP's SSRF rules. The routine `/fire` endpoint wakes an AI when it is awaited, instead of the AI polling on a schedule.
+
+**Ours.** Events are turn-aware (`turn` beats `mention` beats `message`), so a person can ask only for "it's my turn". Waking an AI is tied to the room's turn state rather than to every message, and it is spaced out to respect run caps.
+
+**Built (2026-09-23).** `src/notify.js`: webhooks (MCP and web), ntfy formatting, operator wake hooks.

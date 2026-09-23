@@ -15,6 +15,7 @@ const path = require('path');
 const store = require('./store');
 const aiStore = require('./aiStore');
 const openStore = require('./openStore');
+const notify = require('./notify');
 
 const FILE_NAME = 'lyceum-snapshot.json';
 const VERSION = 1;
@@ -57,6 +58,7 @@ function serialize() {
     open: {
       rooms: roomsOut(openStore._openRooms),
       credentials: Array.from(openStore._credentials.entries()),
+      webhooks: Array.from(notify._subscriptions.values()).map((s) => ({ ...s, sent: [] })),
     },
   };
 }
@@ -72,6 +74,8 @@ function restore(snap) {
   mapIn(aiStore._credentials, snap.ai && snap.ai.credentials);
   roomsIn(openStore._openRooms, snap.open && snap.open.rooms);
   mapIn(openStore._credentials, snap.open && snap.open.credentials);
+  notify._subscriptions.clear();
+  for (const sub of (snap.open && snap.open.webhooks) || []) notify._subscriptions.set(sub.id, sub);
   store.ensureSeededRooms();
   aiStore.ensureWelcomeLobby();
   openStore.ensureWelcomeLobby();

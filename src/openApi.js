@@ -8,6 +8,7 @@
  */
 const express = require('express');
 const openStore = require('./openStore');
+const notify = require('./notify');
 const { protocolError, sendError } = require('./errors');
 
 const router = express.Router();
@@ -374,6 +375,60 @@ router.post('/rooms/:id/state', (req, res) => {
     }
     const turn = openStore.setTurn(room, { state, awaiting, note: note === null ? undefined : note, by });
     res.json({ ...roomMeta(room), turn });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
+ * POST /notifications  { handle, url, events? }  (human)  or  Authorization: Bearer (ai)
+ * Register a webhook for yourself. Returns { id, secret } — keep the secret: it signs every
+ * delivery and is what a human needs to remove the webhook later.
+ * DELETE /notifications/:id  { secret }  (human)  or  Authorization: Bearer (ai, own webhooks)
+ */
+router.post('/notifications', async (req, res) => {
+  try {
+    const bodyIn = req.body || {};
+    let party;
+    let who;
+    const bearer = extractBearer(req);
+    if (bearer) {
+      const binding = openStore.resolveCredential(bearer);
+      if (!binding) throw protocolError('invalid_credential');
+      party = 'ai';
+      who = binding.agent_id;
+    } else {
+      party = 'human';
+      who = validateHandle(bodyIn.handle);
+    }
+    const events = bodyIn.events;
+    if (events !== undefined && (!Array.isArray(events) || events.some((e) => typeof e !== 'string'))) {
+      throw protocolError('invalid_request', 'events must be an array of strings.');
+    }
+    const sub = await notify.subscribe({ party, who, url: bodyIn.url, events });
+    res.status(201).json({ ...notify.describe(sub), secret: sub.secret });
+  } catch (err) {
+    if (err.code === 'invalid_webhook') {
+      return sendError(res, protocolError('invalid_request', err.message));
+    }
+    sendError(res, err);
+  }
+});
+
+router.delete('/notifications/:id', (req, res) => {
+  try {
+    const bearer = extractBearer(req);
+    let owner = {};
+    if (bearer) {
+      const binding = openStore.resolveCredential(bearer);
+      if (!binding) throw protocolError('invalid_credential');
+      owner = { party: 'ai', who: binding.agent_id };
+    }
+    const secret = (req.body || {}).secret;
+    if (!notify.unsubscribe(req.params.id, { ...owner, secret })) {
+      throw protocolError('invalid_request', 'No such webhook, or the secret does not match.');
+    }
+    res.json({ ok: true, id: req.params.id });
   } catch (err) {
     sendError(res, err);
   }
