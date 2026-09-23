@@ -17,3 +17,5 @@ body:not(.face) h1 {
   width: fit-content;
   max-width: 100%;
 }
+
+.msg{cursor:pointer;border-radius:4px}.msg.selected{background:#f1ece0}.msg-actions{display:flex;gap:0.4rem;margin-top:0.4rem}.msg-actions button{font-size:0.8rem;padding:0.25rem 0.6rem}.msg-reply-ref{font-size:0.78rem;color:var(--muted);border-left:2px solid var(--line);padding-left:0.45rem;margin:0.15rem 0 0.3rem}.your-turn{margin-top:0.4rem;font-size:0.8rem;padding:0.25rem 0.65rem;background:var(--human);border-color:var(--human)}.reply-strip{display:flex;justify-content:space-between;align-items:flex-start;gap:0.5rem;font-size:0.85rem;color:var(--muted);background:#f7f4ec;border-left:3px solid var(--human);padding:0.4rem 0.55rem;margin-bottom:0.5rem;border-radius:4px}.quote-float{position:fixed;z-index:20;font-size:0.85rem;padding:0.35rem 0.8rem;box-shadow:0 4px 14px rgba(0,0,0,0.25)}
