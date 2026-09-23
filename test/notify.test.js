@@ -148,6 +148,11 @@ describe('webhooks', () => {
     assert.equal(received.length, 1);
     assert.equal(JSON.parse(received[0].body).message.author, 'ana');
 
+    const status = await json('GET', `/api/open/notifications/${reg.data.id}?secret=${reg.data.secret}`);
+    assert.equal(status.status, 200);
+    assert.match(status.data.last_status, /^200 at /);
+    const peek = await json('GET', `/api/open/notifications/${reg.data.id}?secret=wrong`);
+    assert.equal(peek.status, 400);
     const wrong = await json('DELETE', `/api/open/notifications/${reg.data.id}`, { secret: 'nope' });
     assert.equal(wrong.status, 400);
     const ok = await json('DELETE', `/api/open/notifications/${reg.data.id}`, { secret: reg.data.secret });
