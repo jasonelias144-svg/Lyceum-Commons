@@ -74,7 +74,8 @@ function fail(t) {
 function formatMessage(m) {
   const head = [m.turn_id, `${m.author} (${m.party})`, m.created_at].filter(Boolean).join(' · ');
   const status = m.status ? `\n[status: ${m.status}]` : '';
-  const handTo = m.awaiting ? `\n[awaiting: ${m.awaiting.join(', ')}]` : '';
+  const implied = m.implicit_turn ? ' (implied: a reply straight after their message)' : '';
+  const handTo = m.awaiting ? `\n[awaiting: ${m.awaiting.join(', ')}${implied}]` : '';
   return `── ${head} · ${m.id}\n${m.body}${status}${handTo}`;
 }
 

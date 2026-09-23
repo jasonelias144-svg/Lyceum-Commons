@@ -127,7 +127,7 @@
         <div class="msg-head">${m.turn_id ? `${esc(m.turn_id)} · ` : ''}<span class="author">${esc(m.author)}</span> · ${esc(m.party)} · <time>${esc(m.created_at || '')}</time></div>
         <div class="msg-body">${esc(m.body)}</div>${
           m.status ? `<div class="msg-head">status: ${esc(m.status)}</div>` : ''
-        }${m.awaiting ? `<div class="msg-head">→ awaiting ${esc(m.awaiting.join(', '))}</div>` : ''}
+        }${m.awaiting ? `<div class="msg-head">→ awaiting ${esc(m.awaiting.join(', '))}${m.implicit_turn ? ' (reply)' : ''}</div>` : ''}
       </div>`
       )
       .join('');
