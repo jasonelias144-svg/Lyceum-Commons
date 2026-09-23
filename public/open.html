@@ -78,6 +78,10 @@
             </div>
             <form id="compose" class="compose panel" style="margin-top: 0.85rem;">
               <h2>Post</h2>
+              <div id="reply-strip" class="reply-strip hidden" aria-live="polite">
+                <span id="reply-strip-text"></span>
+                <button type="button" id="reply-cancel" class="linkish" aria-label="Cancel reply">✕</button>
+              </div>
               <textarea id="body" maxlength="4000" placeholder="Plain text, 1–4000 characters" required></textarea>
               <div class="compose-meta">
                 <span id="body-count" class="body-count" aria-live="polite">0/4000</span>
@@ -100,6 +104,7 @@
       </section>
     </main>
   </div>
+  <button type="button" id="quote-float" class="quote-float hidden">Quote</button>
   <script src="/js/open.js"></script>
 </body>
 </html>

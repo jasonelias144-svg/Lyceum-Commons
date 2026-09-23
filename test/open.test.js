@@ -540,3 +540,26 @@ describe('Implicit reply to an AI', () => {
     assert.equal(aiReply.data.message.awaiting, undefined);
   });
 });
+
+describe('Replies', () => {
+  it('reply_to links a post to the message it answers; bad ids are refused, unknown ids ignored', async () => {
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
+    const first = await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'jason', body: 'A question.' });
+    const r = await json('POST', '/api/open/rooms/open-welcome/post', {
+      handle: 'jason',
+      body: 'Following up.',
+      reply_to: first.data.message.id,
+    });
+    assert.equal(r.data.message.reply_to, first.data.message.id);
+    assert.equal(r.data.message.reply_to_author, 'jason');
+    const bad = await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'jason', body: 'x', reply_to: 'nope' });
+    assert.equal(bad.status, 400);
+    const unknown = await json('POST', '/api/open/rooms/open-welcome/post', {
+      handle: 'jason',
+      body: 'y',
+      reply_to: 'msg_000000000000',
+    });
+    assert.equal(unknown.status, 201);
+    assert.equal(unknown.data.message.reply_to, undefined);
+  });
+});

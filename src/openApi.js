@@ -73,6 +73,14 @@ function validateTurnFields({ awaiting, state }, allowed) {
   return { awaiting: awaiting || undefined, state: state || undefined };
 }
 
+function validateReplyTo(replyTo) {
+  if (replyTo === undefined || replyTo === null || replyTo === '') return undefined;
+  if (typeof replyTo !== 'string' || !/^msg_[0-9a-f]{6,32}$/.test(replyTo)) {
+    throw protocolError('invalid_request', 'reply_to must be a message id.');
+  }
+  return replyTo;
+}
+
 const POST_STATES = ['open', 'completed', 'dormant'];
 
 function extractBearer(req) {
@@ -209,7 +217,8 @@ router.post('/rooms/:id/post', (req, res) => {
       forcedParty = 'ai';
       const body = validateBody(rawBody);
       const turnFields = validateTurnFields(bodyIn, POST_STATES);
-      const message = openStore.addMessage(room, { author, party: forcedParty, body, ...turnFields });
+      const reply_to = validateReplyTo(bodyIn.reply_to);
+      const message = openStore.addMessage(room, { author, party: forcedParty, body, reply_to, ...turnFields });
       return res.status(201).json({ message, turn: openStore.turnOf(room) });
     }
 
@@ -229,7 +238,8 @@ router.post('/rooms/:id/post', (req, res) => {
     forcedParty = 'human';
     const body = validateBody(rawBody);
     const turnFields = validateTurnFields(bodyIn, POST_STATES);
-    const message = openStore.addMessage(room, { author, party: forcedParty, body, ...turnFields });
+    const reply_to = validateReplyTo(bodyIn.reply_to);
+    const message = openStore.addMessage(room, { author, party: forcedParty, body, reply_to, ...turnFields });
     res.status(201).json({ message, turn: openStore.turnOf(room) });
   } catch (err) {
     sendError(res, err);

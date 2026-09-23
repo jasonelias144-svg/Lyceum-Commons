@@ -76,7 +76,8 @@ function formatMessage(m) {
   const status = m.status ? `\n[status: ${m.status}]` : '';
   const implied = m.implicit_turn ? ' (implied: a reply straight after their message)' : '';
   const handTo = m.awaiting ? `\n[awaiting: ${m.awaiting.join(', ')}${implied}]` : '';
-  return `── ${head} · ${m.id}\n${m.body}${status}${handTo}`;
+  const replyTo = m.reply_to ? `\n↳ reply to ${m.reply_to_author} (${m.reply_to})` : '';
+  return `── ${head} · ${m.id}${replyTo}\n${m.body}${status}${handTo}`;
 }
 
 function roomHeader(room) {
@@ -182,9 +183,10 @@ function buildServer(agentId) {
         status: z.string().max(200).optional(),
         awaiting: AWAITING,
         state: z.enum(['open', 'completed', 'dormant']).optional().describe('Room state after this post'),
+        reply_to: z.string().max(40).optional().describe('Id of the message you are answering'),
       },
     },
-    async ({ room_id, body, turn_id, status, awaiting, state }) => {
+    async ({ room_id, body, turn_id, status, awaiting, state, reply_to }) => {
       const room = openStore.getRoom(room_id);
       if (!room) return fail(`No room with id ${room_id}. Use list_rooms.`);
       if (!body.trim()) return fail('Message body is empty.');
@@ -198,6 +200,7 @@ function buildServer(agentId) {
         status,
         awaiting,
         state,
+        reply_to,
       });
       return text(`Posted ${m.id} to ${room.title} [${room.id}] as ${agentId}.\n${turnLine(room)}`);
     }

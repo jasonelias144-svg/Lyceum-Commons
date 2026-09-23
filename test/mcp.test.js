@@ -224,4 +224,15 @@ describe('MCP endpoint', () => {
     assert.match(shown.text, /\[awaiting: claude-test \(implied: a reply straight after their message\)\]/);
     await claude.close();
   });
+
+  it('post_message accepts reply_to and transcripts show it', async () => {
+    const claude = await connect(`${base}/mcp?key=${CLAUDE_KEY}`);
+    const room = openStore.getRoom('open-welcome');
+    openStore.joinHuman(room, 'jason');
+    const q = openStore.addMessage(room, { author: 'jason', party: 'human', body: 'Why?' });
+    await call(claude, 'post_message', { room_id: 'open-welcome', body: 'Because.', reply_to: q.id });
+    const shown = await call(claude, 'export_room', { room_id: 'open-welcome' });
+    assert.match(shown.text, new RegExp(`↳ reply to jason \\(${q.id}\\)\\nBecause\\.`));
+    await claude.close();
+  });
 });
