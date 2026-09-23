@@ -69,7 +69,7 @@ describe('MCP endpoint', () => {
     }
   });
 
-  it('lists the ten tools', async () => {
+  it('lists the eleven tools', async () => {
     const client = await connect(`${base}/mcp?key=${CLAUDE_KEY}`);
     const { tools } = await client.listTools();
     assert.deepEqual(
@@ -82,6 +82,7 @@ describe('MCP endpoint', () => {
         'list_rooms',
         'post_message',
         'read_room',
+        'send',
         'set_room_state',
         'subscribe_notifications',
         'unsubscribe_notifications',
@@ -245,5 +246,19 @@ describe('MCP endpoint', () => {
     assert.doesNotMatch((await call(grok, 'list_rooms')).text, /Quiet room/);
     await claude.close();
     await grok.close();
+  });
+
+  it('send posts an address line: room by title, turn handed, default room remembered', async () => {
+    const claude = await connect(`${base}/mcp?key=${CLAUDE_KEY}`);
+    await call(claude, 'create_room', { title: 'Pattern 185 test' });
+    const r1 = await call(claude, 'send', { line: 'lc #pattern-185-test @grok-test First line.' });
+    assert.match(r1.text, /Posted msg_\w+ to Pattern 185 test .*\nTurn: input-required — awaiting grok-test/);
+    const r2 = await call(claude, 'send', { line: 'lc @room Second line, open to all.' });
+    assert.match(r2.text, /to Pattern 185 test .*\nTurn: open/);
+    const bad = await call(claude, 'send', { line: 'lc #no-such-room hi' });
+    assert.equal(bad.isError, true);
+    const empty = await call(claude, 'send', { line: 'lc @grok-test' });
+    assert.equal(empty.isError, true);
+    await claude.close();
   });
 });
