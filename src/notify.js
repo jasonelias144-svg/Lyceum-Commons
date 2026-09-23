@@ -478,8 +478,15 @@ async function sendWake(agent, hook, reasons) {
   }
   try {
     const res = await postIPv4(hook.url, headers, body);
-    if (!res.ok) console.error(`Wake hook for ${agent} answered ${res.status}: ${res.text.replace(/\s+/g, ' ')}`);
-    else console.log(`Wake hook for ${agent} answered ${res.status}`);
+    const how = hook.anthropic
+      ? 'anthropic routine'
+      : headers['webhook-signature']
+        ? 'signed (standard webhooks)'
+        : headers.Authorization
+          ? 'bearer token'
+          : 'unsigned, no token';
+    if (!res.ok) console.error(`Wake hook for ${agent} [${how}] answered ${res.status}: ${res.text.replace(/\s+/g, ' ')}`);
+    else console.log(`Wake hook for ${agent} [${how}] answered ${res.status}`);
   } catch (err) {
     console.error(`Wake hook for ${agent} failed: ${err.message}`);
   }
