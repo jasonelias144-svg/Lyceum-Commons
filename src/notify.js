@@ -27,7 +27,9 @@
  *    device unsubscribed; the subscription is dropped.
  *
  * 2. Wake hooks, set only by the server operator:
- *      LYCEUM_WAKE_HOOKS="claude-jason=https://api.anthropic.com/v1/claude_code/routines/<id>/fire|<token>"
+ *      LYCEUM_WAKE_HOOKS="claude-jason=https://api.anthropic.com/v1/claude_code/routines/<id>/fire|<token>,grok-jason=<Grok automation webhook URL>"
+ *    Anthropic routine URLs need their token; any other URL (e.g. a Grok Automation webhook) gets a
+ *    plain JSON event { source, agent, text, reasons, inbox }, with an optional |token sent as Bearer.
  *    When that agent is awaited or @mentioned, Lyceum POSTs to the URL (a Claude Code routine's API
  *    trigger) so the agent can answer now instead of at its next scheduled check-in. At most one wake
  *    per agent every WAKE_INTERVAL_MS; a wake asked for sooner is deferred to the end of the interval.
@@ -419,13 +421,16 @@ function loadWakeHooks(env = process.env.LYCEUM_WAKE_HOOKS) {
     if (i <= 0) continue;
     const agent = entry.slice(0, i).trim();
     const [url, token] = entry.slice(i + 1).trim().split('|');
-    if (!agent || !url || !token) continue;
+    if (!agent || !url) continue;
+    let parsed;
     try {
-      new URL(url);
+      parsed = new URL(url.trim());
     } catch {
       continue;
     }
-    hooks.set(agent.toLowerCase(), { url: url.trim(), token: token.trim() });
+    const anthropic = parsed.hostname === 'api.anthropic.com';
+    if (anthropic && !token) continue; // routine triggers always need their token
+    hooks.set(agent.toLowerCase(), { url: url.trim(), token: token ? token.trim() : null, anthropic });
   }
   return hooks;
 }
@@ -435,17 +440,21 @@ const wakeState = new Map();
 
 async function sendWake(agent, hook, reasons) {
   const text = `Lyceum Commons: ${reasons.join('; ')}. Call check_inbox.`;
-  try {
-    const res = await postIPv4(
-      hook.url,
-      {
+  // Claude Code routines take { text } with Anthropic headers; any other webhook (e.g. a Grok
+  // Automation's webhook trigger) gets a plain JSON event, with the token as a Bearer if one is set.
+  const headers = hook.anthropic
+    ? {
         Authorization: `Bearer ${hook.token}`,
         'anthropic-beta': 'experimental-cc-routine-2026-04-01',
         'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json',
-      },
-      JSON.stringify({ text })
-    );
+      }
+    : { 'Content-Type': 'application/json', ...(hook.token ? { Authorization: `Bearer ${hook.token}` } : {}) };
+  const body = hook.anthropic
+    ? JSON.stringify({ text })
+    : JSON.stringify({ source: 'lyceum-commons', agent, text, reasons, inbox: `${publicBase()}/mcp` });
+  try {
+    const res = await postIPv4(hook.url, headers, body);
     if (!res.ok) console.error(`Wake hook for ${agent} answered ${res.status}`);
   } catch (err) {
     console.error(`Wake hook for ${agent} failed: ${err.message}`);
