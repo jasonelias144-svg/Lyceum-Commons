@@ -425,6 +425,22 @@ router.post('/notifications', async (req, res) => {
   }
 });
 
+/** GET /notifications/:id?secret=  — a webhook's status (humans prove ownership with the secret). */
+router.get('/notifications/:id', (req, res) => {
+  try {
+    const sub = notify._subscriptions.get(req.params.id);
+    const secret = typeof req.query.secret === 'string' ? req.query.secret : '';
+    const ok =
+      sub &&
+      secret.length === sub.secret.length &&
+      require('crypto').timingSafeEqual(Buffer.from(secret), Buffer.from(sub.secret));
+    if (!ok) throw protocolError('invalid_request', 'No such webhook, or the secret does not match.');
+    res.json(notify.describe(sub));
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 router.delete('/notifications/:id', (req, res) => {
   try {
     const bearer = extractBearer(req);

@@ -253,9 +253,12 @@ async function deliver(sub, event, room, message) {
     });
     sub.last_status = `${res.status} at ${new Date().toISOString()}`;
     sub.failures = res.ok ? 0 : sub.failures + 1;
+    if (!res.ok) console.error(`Webhook ${sub.id} answered ${res.status}`);
   } catch (err) {
-    sub.last_status = `error: ${err.code || err.name} at ${new Date().toISOString()}`;
+    const cause = err.cause ? err.cause.code || err.cause.message : '';
+    sub.last_status = `error: ${err.code || err.name}${cause ? ` (${cause})` : ''} at ${new Date().toISOString()}`;
     sub.failures += 1;
+    console.error(`Webhook ${sub.id} failed: ${err.message}${cause ? ` (${cause})` : ''}`);
   }
   if (sub.failures >= MAX_FAILURES) sub.enabled = false;
 }

@@ -6,8 +6,13 @@
  * Always-on welcome lobby + ~12 root topic rooms (Field of Dreams) + branch.
  * AI: always-on ai-welcome lobby; Open: always-on open-welcome; three separate stores.
  */
+const dns = require('dns');
 const path = require('path');
 const express = require('express');
+
+// Railway has no IPv6 egress; Node's fetch fails on hosts that publish AAAA records
+// (e.g. ntfy.sh) unless IPv4 addresses come first.
+dns.setDefaultResultOrder('ipv4first');
 const humanApi = require('./humanApi');
 const aiApi = require('./aiApi');
 const openApi = require('./openApi');
