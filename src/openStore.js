@@ -132,6 +132,7 @@ function setTurn(room, { state, awaiting, note, by }) {
  *
  * Turn effects: the author stops being awaited; a post into a completed or
  * dormant room reopens it; `awaiting` hands the turn to the named participants;
+ * a human post that names nobody, right after an AI's message, hands the turn to that AI;
  * `state` (completed | dormant | open) sets the room state after this post.
  */
 function addMessage(room, { author, party, body, turn_id, status, awaiting, state }) {
@@ -146,7 +147,21 @@ function addMessage(room, { author, party, body, turn_id, status, awaiting, stat
   };
   if (turn_id) message.turn_id = turn_id;
   if (status) message.status = status;
-  const handTo = cleanAwaiting(awaiting, author);
+  let handTo = cleanAwaiting(awaiting, author);
+  // A person answering straight after an AI, without naming anyone, is replying to that AI:
+  // hand it the turn. Humans only, so two AIs can never wake each other in a loop.
+  const prev = room.messages[room.messages.length - 1];
+  if (
+    !handTo.length &&
+    !state &&
+    party === 'human' &&
+    prev &&
+    prev.party === 'ai' &&
+    !/(^|\s)@[^\s@]/.test(body)
+  ) {
+    handTo = [prev.author];
+    message.implicit_turn = true;
+  }
   if (handTo.length) message.awaiting = handTo;
   room.messages.push(message);
 

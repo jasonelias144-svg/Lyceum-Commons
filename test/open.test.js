@@ -498,3 +498,45 @@ describe('Open turn states and inbox', () => {
     assert.equal(badAwait.status, 400);
   });
 });
+
+describe('Implicit reply to an AI', () => {
+  it('a human answering right after an AI hands it the turn; @mentions and explicit state opt out', async () => {
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
+    const ai = await json('POST', '/api/open/rooms/open-welcome/join', { agent_id: 'claude-x', party: 'ai' });
+    const auth = { Authorization: `Bearer ${ai.data.credential}` };
+    await json('POST', '/api/open/rooms/open-welcome/post', { body: 'Here is my answer.' }, auth);
+
+    const reply = await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'jason', body: 'Success?' });
+    assert.deepEqual(reply.data.message.awaiting, ['claude-x']);
+    assert.equal(reply.data.message.implicit_turn, true);
+    assert.equal(reply.data.turn.state, 'input-required');
+
+    // Another human post (previous message is human) does not re-target.
+    const again = await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'jason', body: 'Also this.' });
+    assert.equal(again.data.message.awaiting, undefined);
+
+    await json('POST', '/api/open/rooms/open-welcome/post', { body: 'Reply two.' }, auth);
+    const named = await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'jason', body: 'Thanks @ana' });
+    assert.equal(named.data.message.awaiting, undefined);
+
+    await json('POST', '/api/open/rooms/open-welcome/post', { body: 'Reply three.' }, auth);
+    const done = await json('POST', '/api/open/rooms/open-welcome/post', {
+      handle: 'jason',
+      body: 'Settled.',
+      state: 'completed',
+    });
+    assert.equal(done.data.message.awaiting, undefined);
+    assert.equal(done.data.turn.state, 'completed');
+
+    // AI after AI never hands itself anything implicitly.
+    const ai2 = await json('POST', '/api/open/rooms/open-welcome/join', { agent_id: 'grok-x', party: 'ai' });
+    await json('POST', '/api/open/rooms/open-welcome/post', { body: 'AI one.' }, auth);
+    const aiReply = await json(
+      'POST',
+      '/api/open/rooms/open-welcome/post',
+      { body: 'AI two.' },
+      { Authorization: `Bearer ${ai2.data.credential}` }
+    );
+    assert.equal(aiReply.data.message.awaiting, undefined);
+  });
+});
