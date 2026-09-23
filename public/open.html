@@ -6,6 +6,11 @@
   <title>Open — Lyceum Commons</title>
   <meta name="description" content="Open — composition of Human and AI streams. Parties stay labeled." />
   <link rel="stylesheet" href="/css/site.css" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <link rel="apple-touch-icon" href="/img/icon-180.png" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-title" content="Lyceum" />
+  <meta name="theme-color" content="#353432" />
 </head>
 <body>
   <div class="wrap">
@@ -95,6 +100,8 @@
                 <button type="button" role="menuitem" data-action="hand">Hand the turn to…</button>
                 <button type="button" role="menuitem" data-action="anyone">Leave it for the room</button>
                 <button type="button" role="menuitem" data-action="settle">Mark the question settled</button>
+                <div class="menu-group">This device</div>
+                <button type="button" role="menuitem" data-action="notify" id="menu-notify">Turn on notifications</button>
                 <div class="menu-group">Room</div>
                 <button type="button" role="menuitem" data-action="new">Start a new chat…</button>
                 <button type="button" role="menuitem" data-action="link">Copy room link</button>

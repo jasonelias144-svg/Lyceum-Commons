@@ -464,6 +464,42 @@ router.post('/notifications', async (req, res) => {
   }
 });
 
+/** GET /push/key — the server's public VAPID key, for PushManager.subscribe(). */
+router.get('/push/key', (_req, res) => {
+  res.json({ publicKey: notify.vapidPublicKey() });
+});
+
+/**
+ * POST /push/subscribe  human: { handle, subscription, events? }  ai: Authorization: Bearer
+ * Store this device's PushSubscription. Returns { id, secret }; remove it with
+ * DELETE /notifications/:id { secret }.
+ */
+router.post('/push/subscribe', (req, res) => {
+  try {
+    const bodyIn = req.body || {};
+    let party = 'human';
+    let who;
+    const bearer = extractBearer(req);
+    if (bearer) {
+      const binding = openStore.resolveCredential(bearer);
+      if (!binding) throw protocolError('invalid_credential');
+      party = 'ai';
+      who = binding.agent_id;
+    } else {
+      who = validateHandle(bodyIn.handle);
+    }
+    const events = bodyIn.events;
+    if (events !== undefined && (!Array.isArray(events) || events.some((e) => typeof e !== 'string'))) {
+      throw protocolError('invalid_request', 'events must be an array of strings.');
+    }
+    const sub = notify.subscribeWebPush({ party, who, subscription: bodyIn.subscription, events });
+    res.status(201).json({ ...notify.describe(sub), secret: sub.secret });
+  } catch (err) {
+    if (err.code === 'invalid_webhook') return sendError(res, protocolError('invalid_request', err.message));
+    sendError(res, err);
+  }
+});
+
 /** GET /notifications/:id?secret=  — a webhook's status (humans prove ownership with the secret). */
 router.get('/notifications/:id', (req, res) => {
   try {
