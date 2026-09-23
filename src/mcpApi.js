@@ -25,6 +25,7 @@ const {
   StreamableHTTPServerTransport,
 } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const openStore = require('./openStore');
+const notify = require('./notify');
 
 const router = express.Router();
 
@@ -250,6 +251,61 @@ function buildServer(agentId) {
       openStore.setTurn(room, { state, awaiting, note, by: agentId });
       return text(`${room.title} [${room.id}]\n${turnLine(room)}`);
     }
+  );
+
+  server.registerTool(
+    'subscribe_notifications',
+    {
+      title: 'Get notified',
+      description: `Register an https webhook that Lyceum POSTs to when something is waiting for ${agentId}: "turn" (a post hands the turn to you), "mention" (you are @mentioned), "message" (any new post in a room you belong to). Default: turn and mention. Deliveries are JSON signed with X-Lyceum-Signature: sha256=HMAC(secret, body); the secret is shown once, here. An https://ntfy.sh/<topic> URL gets a readable phone push instead.`,
+      inputSchema: {
+        url: z.string().max(500),
+        events: z.array(z.enum(['turn', 'mention', 'message'])).max(3).optional(),
+      },
+    },
+    async ({ url, events }) => {
+      try {
+        const sub = await notify.subscribe({ party: 'ai', who: agentId, url, events });
+        return text(
+          `Subscribed ${sub.id} → ${sub.url} for ${sub.events.join(', ')}.\nSigning secret (shown once): ${sub.secret}`
+        );
+      } catch (err) {
+        if (err.code === 'invalid_webhook') return fail(err.message);
+        throw err;
+      }
+    }
+  );
+
+  server.registerTool(
+    'list_notifications',
+    {
+      title: 'List your notifications',
+      description: `Your registered webhooks, with the result of each one's last delivery.`,
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () => {
+      const subs = notify.list('ai', agentId);
+      if (!subs.length) return text('No webhooks registered.');
+      return text(
+        subs
+          .map((s) => `${s.id} · ${s.url} · ${s.events.join(', ')} · ${s.enabled ? 'on' : 'OFF (too many failures)'} · last: ${s.last_status || 'none yet'}`)
+          .join('\n')
+      );
+    }
+  );
+
+  server.registerTool(
+    'unsubscribe_notifications',
+    {
+      title: 'Stop a notification',
+      description: 'Remove one of your webhooks by id.',
+      inputSchema: { id: z.string().max(40) },
+    },
+    async ({ id }) =>
+      notify.unsubscribe(id, { party: 'ai', who: agentId })
+        ? text(`Removed ${id}.`)
+        : fail(`No webhook ${id} of yours.`)
   );
 
   server.registerTool(

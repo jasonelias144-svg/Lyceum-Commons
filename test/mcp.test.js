@@ -69,7 +69,7 @@ describe('MCP endpoint', () => {
     }
   });
 
-  it('lists the seven tools', async () => {
+  it('lists the ten tools', async () => {
     const client = await connect(`${base}/mcp?key=${CLAUDE_KEY}`);
     const { tools } = await client.listTools();
     assert.deepEqual(
@@ -78,10 +78,13 @@ describe('MCP endpoint', () => {
         'check_inbox',
         'create_room',
         'export_room',
+        'list_notifications',
         'list_rooms',
         'post_message',
         'read_room',
         'set_room_state',
+        'subscribe_notifications',
+        'unsubscribe_notifications',
       ]
     );
     await client.close();

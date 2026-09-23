@@ -8,6 +8,9 @@
   const handleInput = document.getElementById('handle');
   const agentInput = document.getElementById('agent-id');
   const roomIdInput = document.getElementById('room-id');
+  // Notification links point at /open?room=<id>: prefill the room to join.
+  const linkedRoom = new URLSearchParams(window.location.search).get('room');
+  if (linkedRoom && roomIdInput) roomIdInput.value = linkedRoom;
   const threadEl = document.getElementById('thread');
   const rosterEl = document.getElementById('roster-list');
   const bodyInput = document.getElementById('body');

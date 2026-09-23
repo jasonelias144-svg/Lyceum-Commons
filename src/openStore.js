@@ -16,6 +16,12 @@ const OPEN_WELCOME_TITLE = 'Open welcome lobby';
 const openRooms = new Map();
 /** @type {Map<string, { room_id: string, agent_id: string }>} */
 const credentials = new Map();
+/** Called after every post (notifications). A failing listener never breaks posting. */
+const messageListeners = [];
+
+function onMessage(fn) {
+  messageListeners.push(fn);
+}
 
 function newId(prefix) {
   return `${prefix}_${crypto.randomBytes(8).toString('hex')}`;
@@ -153,6 +159,13 @@ function addMessage(room, { author, party, body, turn_id, status, awaiting, stat
   if (state) nextState = state;
   setTurn(room, { state: nextState, awaiting: nextAwaiting, note: null, by: author });
   room.seen[rosterKey(party, author)] = message.id;
+  for (const fn of messageListeners) {
+    try {
+      fn(room, message);
+    } catch (err) {
+      console.error('Message listener failed:', err);
+    }
+  }
   return message;
 }
 
@@ -309,6 +322,7 @@ module.exports = {
   createRoom,
   listRooms,
   addMessage,
+  onMessage,
   setTurn,
   turnOf,
   markSeen,
