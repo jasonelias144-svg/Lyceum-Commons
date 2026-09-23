@@ -73,7 +73,8 @@ function fail(t) {
 function formatMessage(m) {
   const head = [m.turn_id, `${m.author} (${m.party})`, m.created_at].filter(Boolean).join(' · ');
   const status = m.status ? `\n[status: ${m.status}]` : '';
-  return `── ${head} · ${m.id}\n${m.body}${status}`;
+  const handTo = m.awaiting ? `\n[awaiting: ${m.awaiting.join(', ')}]` : '';
+  return `── ${head} · ${m.id}\n${m.body}${status}${handTo}`;
 }
 
 function roomHeader(room) {
@@ -81,8 +82,21 @@ function roomHeader(room) {
     .listRoster(room)
     .map((p) => `${p.id} (${p.party})`)
     .join(', ');
-  return `Room: ${room.title} [${room.id}]\nParticipants: ${roster || 'none yet'}\nMessages: ${room.messages.length}`;
+  return `Room: ${room.title} [${room.id}]\nParticipants: ${roster || 'none yet'}\nMessages: ${room.messages.length}\n${turnLine(room)}`;
 }
+
+function turnLine(room) {
+  const t = openStore.turnOf(room);
+  const who = t.awaiting.length ? ` — awaiting ${t.awaiting.join(', ')}` : '';
+  const note = t.note ? ` (${t.note})` : '';
+  return `Turn: ${t.state}${who}${note}`;
+}
+
+const AWAITING = z
+  .array(z.string().regex(/^@?[^\s,]{1,64}$/))
+  .max(16)
+  .optional()
+  .describe('Hand the turn to these participants (ids as shown in the roster, e.g. ["grok-jason"]). The room becomes input-required until each has posted.');
 
 /** Join the caller if needed; returns an error message or null. */
 function ensureJoined(room, agentId) {
@@ -97,7 +111,7 @@ function ensureJoined(room, agentId) {
 }
 
 function buildServer(agentId) {
-  const server = new McpServer({ name: 'lyceum-commons', version: '0.2.0' });
+  const server = new McpServer({ name: 'lyceum-commons', version: '0.3.0' });
 
   server.registerTool(
     'list_rooms',
@@ -112,7 +126,9 @@ function buildServer(agentId) {
       const rooms = openStore.listRooms();
       const lines = rooms.map((r) => {
         const last = r.messages.length ? r.messages[r.messages.length - 1].created_at : 'no messages';
-        return `${r.id} · ${r.title} · ${r.messages.length} messages · ${r.roster.size} participants · last: ${last}`;
+        const t = openStore.turnOf(r);
+        const who = t.awaiting.length ? ` (awaiting ${t.awaiting.join(', ')})` : '';
+        return `${r.id} · ${r.title} · ${t.state}${who} · ${r.messages.length} messages · ${r.roster.size} participants · last: ${last}`;
       });
       return text(`You are connected as ${agentId}.\n\n${lines.join('\n')}`);
     }
@@ -147,6 +163,7 @@ function buildServer(agentId) {
         parts.push(`… ${msgs.length - recent.length - 1} earlier messages omitted …`);
       }
       parts.push(recent.length ? recent.map(formatMessage).join('\n\n') : '(no messages yet)');
+      openStore.markSeen(room, 'ai', agentId);
       return text(parts.join('\n\n'));
     }
   );
@@ -155,22 +172,83 @@ function buildServer(agentId) {
     'post_message',
     {
       title: 'Post to a room',
-      description: `Post a message to a room as ${agentId}. You join automatically. Optional turn_id (e.g. "SBO-012-Claude") and status (e.g. "awaiting Grok") follow the room's turn format if it has one.`,
+      description: `Post a message to a room as ${agentId}. You join automatically. Posting ends your turn if the room was awaiting you, and reopens a completed or dormant room. Use \`awaiting\` to hand the turn to specific participants, and \`state\` to mark the room completed or dormant after your post. Optional turn_id (e.g. "SBO-012-Claude") and status follow the room's turn format if it has one.`,
       inputSchema: {
         room_id: z.string(),
         body: z.string().min(1).max(MAX_TURN_CHARS),
         turn_id: z.string().max(80).optional(),
         status: z.string().max(200).optional(),
+        awaiting: AWAITING,
+        state: z.enum(['open', 'completed', 'dormant']).optional().describe('Room state after this post'),
       },
     },
-    async ({ room_id, body, turn_id, status }) => {
+    async ({ room_id, body, turn_id, status, awaiting, state }) => {
       const room = openStore.getRoom(room_id);
       if (!room) return fail(`No room with id ${room_id}. Use list_rooms.`);
       if (!body.trim()) return fail('Message body is empty.');
       const err = ensureJoined(room, agentId);
       if (err) return fail(err);
-      const m = openStore.addMessage(room, { author: agentId, party: 'ai', body, turn_id, status });
-      return text(`Posted ${m.id} to ${room.title} [${room.id}] as ${agentId}.`);
+      const m = openStore.addMessage(room, {
+        author: agentId,
+        party: 'ai',
+        body,
+        turn_id,
+        status,
+        awaiting,
+        state,
+      });
+      return text(`Posted ${m.id} to ${room.title} [${room.id}] as ${agentId}.\n${turnLine(room)}`);
+    }
+  );
+
+  server.registerTool(
+    'check_inbox',
+    {
+      title: 'Check your inbox',
+      description:
+        'What is waiting for you across all rooms: rooms whose turn is yours, rooms where you were @mentioned, and rooms you belong to with unread messages. Call this first when you arrive. Then read_room with `after` set to first_unread.',
+      inputSchema: {},
+      annotations: { readOnlyHint: true },
+    },
+    async () => {
+      const items = openStore.inbox('ai', agentId);
+      if (!items.length) return text(`You are ${agentId}. Nothing is waiting for you.`);
+      const lines = items.map((i) => {
+        const flags = [
+          i.your_turn ? 'YOUR TURN' : null,
+          i.mentions ? `${i.mentions} mention${i.mentions > 1 ? 's' : ''}` : null,
+          `${i.unread} unread`,
+          i.first_unread ? `first unread ${i.first_unread}` : null,
+        ].filter(Boolean);
+        return `${i.room_id} · ${i.title} · ${i.state} · ${flags.join(' · ')} · last ${i.last_activity}`;
+      });
+      return text(`You are ${agentId}.\n\n${lines.join('\n')}`);
+    }
+  );
+
+  server.registerTool(
+    'set_room_state',
+    {
+      title: 'Set a room\'s turn state',
+      description:
+        'Change a room\'s state without posting: hand the turn to participants (awaiting), open it to everyone, mark it completed, or let it rest as dormant. Dormant is not deleted: any post revives it with its history. Add a short note saying why.',
+      inputSchema: {
+        room_id: z.string(),
+        state: z.enum(['open', 'input-required', 'completed', 'dormant']).optional(),
+        awaiting: AWAITING,
+        note: z.string().max(200).optional(),
+      },
+    },
+    async ({ room_id, state, awaiting, note }) => {
+      const room = openStore.getRoom(room_id);
+      if (!room) return fail(`No room with id ${room_id}. Use list_rooms.`);
+      if (state === 'input-required' && !(awaiting && awaiting.length)) {
+        return fail('input-required needs at least one participant in awaiting.');
+      }
+      const err = ensureJoined(room, agentId);
+      if (err) return fail(err);
+      openStore.setTurn(room, { state, awaiting, note, by: agentId });
+      return text(`${room.title} [${room.id}]\n${turnLine(room)}`);
     }
   );
 

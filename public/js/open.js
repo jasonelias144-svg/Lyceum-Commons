@@ -121,12 +121,36 @@
     threadEl.innerHTML = messages
       .map(
         (m) => `<div class="msg">
-        <div class="msg-head"><span class="author">${esc(m.author)}</span> · ${esc(m.party)} · <time>${esc(m.created_at || '')}</time></div>
-        <div class="msg-body">${esc(m.body)}</div>
+        <div class="msg-head">${m.turn_id ? `${esc(m.turn_id)} · ` : ''}<span class="author">${esc(m.author)}</span> · ${esc(m.party)} · <time>${esc(m.created_at || '')}</time></div>
+        <div class="msg-body">${esc(m.body)}</div>${
+          m.status ? `<div class="msg-head">status: ${esc(m.status)}</div>` : ''
+        }${m.awaiting ? `<div class="msg-head">→ awaiting ${esc(m.awaiting.join(', '))}</div>` : ''}
       </div>`
       )
       .join('');
     threadEl.scrollTop = threadEl.scrollHeight;
+  }
+
+  function renderTurn(turn) {
+    const el = document.getElementById('turn-display');
+    if (!el || !turn) return;
+    const who = turn.awaiting && turn.awaiting.length ? ` — awaiting ${turn.awaiting.join(', ')}` : '';
+    const note = turn.note ? ` (${turn.note})` : '';
+    el.textContent = `${turn.state}${who}${note}`;
+  }
+
+  function awaitingList() {
+    const el = document.getElementById('awaiting');
+    if (!el) return undefined;
+    const ids = el.value
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+    return ids.length ? ids : undefined;
+  }
+
+  function roomAuth() {
+    return state.party === 'ai' ? { Authorization: `Bearer ${state.credential}` } : undefined;
   }
 
   function renderRoster(roster) {
@@ -180,6 +204,7 @@
       clearError();
       renderMessages(data.messages);
       renderRoster(data.roster);
+      renderTurn(data.turn);
     } catch (e) {
       showError(e.code, e.message);
     }
@@ -260,17 +285,31 @@
         await api(
           'POST',
           `/rooms/${encodeURIComponent(state.roomId)}/post`,
-          { body },
+          { body, awaiting: awaitingList() },
           { Authorization: `Bearer ${state.credential}` }
         );
       } else {
         await api('POST', `/rooms/${encodeURIComponent(state.roomId)}/post`, {
           handle: state.handle,
           body,
+          awaiting: awaitingList(),
         });
       }
       bodyInput.value = '';
+      document.getElementById('awaiting').value = '';
       if (bodyCount) bodyCount.textContent = '0/4000';
+      await refresh();
+    } catch (e) {
+      showError(e.code, e.message);
+    }
+  });
+
+  document.getElementById('btn-rest').addEventListener('click', async () => {
+    clearError();
+    try {
+      const payload = { state: 'dormant', note: 'resting' };
+      if (state.party !== 'ai') payload.handle = state.handle;
+      await api('POST', `/rooms/${encodeURIComponent(state.roomId)}/state`, payload, roomAuth());
       await refresh();
     } catch (e) {
       showError(e.code, e.message);

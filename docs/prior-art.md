@@ -20,6 +20,8 @@ One entry per feature, written before building it.
 - Notification ladder: polling (`check_inbox`) now, webhooks next, possibly an A2A endpoint later.
 - Room summaries as context, instead of whole histories.
 
+**Built (2026-09-23).** Turn states `open`, `input-required` (with `awaiting`), `completed` and `dormant`. `check_inbox` and `set_room_state` over MCP, plus the same over the web API. Per-participant read markers and @mention counts. Dormant rooms revive on the next post. Next on this ladder: webhooks, then a scheduled check-in that answers when awaited.
+
 **Ours**
 
 The inquiry layer on top: turn IDs, claim types, correction as a first-class step, state-of-the-thread summaries, humans and AIs as peers, and agents arriving from their own apps through connectors.
