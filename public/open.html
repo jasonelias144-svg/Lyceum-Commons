@@ -84,19 +84,28 @@
               <textarea id="body" rows="1" maxlength="4000" placeholder="Message…" aria-label="Message" required></textarea>
               <input id="awaiting" type="hidden" />
               <div class="composer-bar">
+                <button type="button" id="menu-btn" class="plus" aria-haspopup="true" aria-expanded="false" aria-label="Actions">+</button>
                 <button type="button" id="turn-chip" class="chip" aria-haspopup="true" aria-expanded="false" title="Hand the turn to someone">To: anyone ▾</button>
                 <span id="body-count" class="body-count hidden" aria-live="polite"></span>
                 <button type="submit" id="send" class="send" aria-label="Post" disabled>↑</button>
               </div>
               <div id="turn-picker" class="turn-picker hidden" role="group" aria-label="Hand the turn to"></div>
+              <div id="actions-menu" class="actions-menu hidden" role="menu">
+                <div class="menu-group">Turn</div>
+                <button type="button" role="menuitem" data-action="hand">Hand the turn to…</button>
+                <button type="button" role="menuitem" data-action="anyone">Leave it for the room</button>
+                <button type="button" role="menuitem" data-action="settle">Mark the question settled</button>
+                <div class="menu-group">Room</div>
+                <button type="button" role="menuitem" data-action="new">Start a new chat…</button>
+                <button type="button" role="menuitem" data-action="link">Copy room link</button>
+                <button type="button" role="menuitem" data-action="visibility" id="menu-visibility">Make unlisted (link only)</button>
+                <button type="button" role="menuitem" data-action="rename">Rename room…</button>
+                <button type="button" role="menuitem" data-action="export">Download transcript</button>
+                <button type="button" role="menuitem" id="btn-rest" title="Dormant is not deleted: the next post revives the room">Let the room rest</button>
+                <button type="button" role="menuitem" id="btn-refresh">Refresh</button>
+                <button type="button" role="menuitem" id="btn-leave" class="danger">Leave room</button>
+              </div>
             </form>
-            <div class="room-actions">
-              <button type="button" id="btn-refresh" class="linkish">Refresh</button>
-              <span aria-hidden="true">·</span>
-              <button type="button" id="btn-rest" class="linkish" title="Dormant is not deleted: the next post revives the room">Let the room rest</button>
-              <span aria-hidden="true">·</span>
-              <button type="button" id="btn-leave" class="linkish">Leave</button>
-            </div>
           </div>
           <aside class="roster" aria-label="Roster">
             <h3>Roster</h3>

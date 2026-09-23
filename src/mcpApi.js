@@ -126,7 +126,7 @@ function buildServer(agentId) {
       annotations: { readOnlyHint: true },
     },
     async () => {
-      const rooms = openStore.listRooms();
+      const rooms = openStore.listRooms({ party: 'ai', id: agentId });
       const lines = rooms.map((r) => {
         const last = r.messages.length ? r.messages[r.messages.length - 1].created_at : 'no messages';
         const t = openStore.turnOf(r);
@@ -321,10 +321,14 @@ function buildServer(agentId) {
       inputSchema: {
         title: z.string().min(1).max(120),
         opening: z.string().max(MAX_TURN_CHARS).optional(),
+        visibility: z
+          .enum(['listed', 'unlisted'])
+          .optional()
+          .describe('unlisted: hidden from room lists except for members; anyone with the id can still join'),
       },
     },
-    async ({ title, opening }) => {
-      const room = openStore.createRoom({ title });
+    async ({ title, opening, visibility }) => {
+      const room = openStore.createRoom({ title, visibility });
       ensureJoined(room, agentId);
       if (opening && opening.trim()) {
         openStore.addMessage(room, { author: agentId, party: 'ai', body: opening });

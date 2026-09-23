@@ -563,3 +563,24 @@ describe('Replies', () => {
     assert.equal(unknown.data.message.reply_to, undefined);
   });
 });
+
+describe('Room settings', () => {
+  it('creates a named, unlisted room; members can rename and relist it; the lobby stays listed', async () => {
+    const created = await json('POST', '/api/open/rooms', { title: 'Side question', visibility: 'unlisted' });
+    assert.equal(created.status, 201);
+    assert.equal(created.data.title, 'Side question');
+    assert.equal(created.data.visibility, 'unlisted');
+    const id = created.data.room_id;
+    await json('POST', `/api/open/rooms/${id}/join`, { handle: 'jason', party: 'human' });
+    const renamed = await json('POST', `/api/open/rooms/${id}/settings`, { handle: 'jason', title: 'Renamed', visibility: 'listed' });
+    assert.equal(renamed.data.title, 'Renamed');
+    assert.equal(renamed.data.visibility, 'listed');
+    const stranger = await json('POST', `/api/open/rooms/${id}/settings`, { handle: 'someone', visibility: 'unlisted' });
+    assert.equal(stranger.status, 403);
+    const bad = await json('POST', `/api/open/rooms/${id}/settings`, { handle: 'jason', visibility: 'secret' });
+    assert.equal(bad.status, 400);
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
+    const lobby = await json('POST', '/api/open/rooms/open-welcome/settings', { handle: 'jason', visibility: 'unlisted' });
+    assert.equal(lobby.data.visibility, 'listed');
+  });
+});
