@@ -13,7 +13,7 @@
  *    secret returned at registration. URLs on ntfy.sh get a plain-text push instead of JSON, so a
  *    phone shows something readable.
  *    Safety: https only; hosts that resolve to private, loopback or link-local addresses are
- *    refused, at registration and again at delivery; no redirects; 5 s timeout; at most 60
+ *    refused, at registration and again at delivery; IPv4 only; no redirects; 5 s timeout; at most 60
  *    deliveries per hour per subscription; 10 failures in a row disable it; at most 5 webhooks per
  *    participant and 500 in total (human handles are not authenticated).
  *    Known limit: the host is resolved again by fetch after the check, so DNS rebinding is not
@@ -27,6 +27,8 @@
  */
 const crypto = require('crypto');
 const dns = require('dns').promises;
+const http = require('http');
+const https = require('https');
 const net = require('net');
 const openStore = require('./openStore');
 
@@ -68,6 +70,30 @@ function isPrivateAddress(ip) {
   const v6 = ip.toLowerCase();
   if (v6.startsWith('::ffff:')) return isPrivateAddress(v6.slice(7));
   return v6 === '::' || v6 === '::1' || /^f[cd]/.test(v6) || /^fe[89ab]/.test(v6);
+}
+
+/**
+ * POST with Node's own client, pinned to IPv4. Railway has no IPv6 egress, and fetch's
+ * happy-eyeballs attempts time out there on hosts that also publish IPv6 (e.g. ntfy.sh).
+ * Redirects are not followed. Resolves { status, ok }.
+ */
+function postIPv4(urlString, headers, body) {
+  const url = new URL(urlString);
+  const client = url.protocol === 'http:' ? http : https;
+  const data = Buffer.from(body);
+  return new Promise((resolve, reject) => {
+    const req = client.request(
+      url,
+      { method: 'POST', family: 4, headers: { ...headers, 'Content-Length': data.length }, timeout: TIMEOUT_MS },
+      (res) => {
+        res.resume();
+        res.on('end', () => resolve({ status: res.statusCode, ok: res.statusCode >= 200 && res.statusCode < 300 }));
+      }
+    );
+    req.on('timeout', () => req.destroy(Object.assign(new Error('timed out'), { code: 'ETIMEDOUT' })));
+    req.on('error', reject);
+    req.end(data);
+  });
 }
 
 function badUrl(message) {
@@ -244,18 +270,12 @@ async function deliver(sub, event, room, message) {
   headers['X-Lyceum-Signature'] = `sha256=${signature}`;
   try {
     await checkDestination(sub.url);
-    const res = await fetch(sub.url, {
-      method: 'POST',
-      headers,
-      body,
-      redirect: 'manual',
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+    const res = await postIPv4(sub.url, headers, body);
     sub.last_status = `${res.status} at ${new Date().toISOString()}`;
     sub.failures = res.ok ? 0 : sub.failures + 1;
     if (!res.ok) console.error(`Webhook ${sub.id} answered ${res.status}`);
   } catch (err) {
-    const cause = err.cause ? err.cause.code || err.cause.message : '';
+    const cause = err.cause ? err.cause.code || err.cause.message : err.code || '';
     sub.last_status = `error: ${err.code || err.name}${cause ? ` (${cause})` : ''} at ${new Date().toISOString()}`;
     sub.failures += 1;
     console.error(`Webhook ${sub.id} failed: ${err.message}${cause ? ` (${cause})` : ''}`);
@@ -290,18 +310,16 @@ const wakeState = new Map();
 async function sendWake(agent, hook, reasons) {
   const text = `Lyceum Commons: ${reasons.join('; ')}. Call check_inbox.`;
   try {
-    const res = await fetch(hook.url, {
-      method: 'POST',
-      headers: {
+    const res = await postIPv4(
+      hook.url,
+      {
         Authorization: `Bearer ${hook.token}`,
         'anthropic-beta': 'experimental-cc-routine-2026-04-01',
         'anthropic-version': '2023-06-01',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ text }),
-      redirect: 'manual',
-      signal: AbortSignal.timeout(TIMEOUT_MS),
-    });
+      JSON.stringify({ text })
+    );
     if (!res.ok) console.error(`Wake hook for ${agent} answered ${res.status}`);
   } catch (err) {
     console.error(`Wake hook for ${agent} failed: ${err.message}`);
