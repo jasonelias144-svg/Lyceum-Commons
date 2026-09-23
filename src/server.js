@@ -16,6 +16,7 @@ const mcpApi = require('./mcpApi');
 const store = require('./store');
 const aiStore = require('./aiStore');
 const openStore = require('./openStore');
+const persist = require('./persist');
 
 const app = express();
 const PORT = process.env.PORT || 3000;
@@ -25,7 +26,16 @@ store.ensureSeededRooms();
 aiStore.ensureWelcomeLobby();
 openStore.ensureWelcomeLobby();
 
+if (require.main === module) {
+  try {
+    if (persist.load()) console.log(`Restored state from ${persist.snapshotPath()}`);
+  } catch (err) {
+    console.error('Could not restore snapshot; starting empty:', err);
+  }
+}
+
 app.use(express.json({ limit: '64kb' }));
+app.use(persist.middleware);
 
 app.use('/api/human', humanApi);
 app.use('/api/guestbook', guestbookApi);
@@ -49,7 +59,13 @@ app.use((err, _req, res, _next) => {
 });
 
 if (require.main === module) {
+  persist.installShutdownHooks();
   app.listen(PORT, () => {
+    console.log(
+      persist.snapshotPath()
+        ? `Persisting state to ${persist.snapshotPath()}`
+        : 'No data directory (LYCEUM_DATA_DIR / Railway volume): state is in memory only'
+    );
     console.log(`Lyceum Commons listening on http://localhost:${PORT}`);
     console.log(`Human welcome lobby: /human (room id ${store.WELCOME_ROOM_ID})`);
     console.log(`Topic shelf: ${store.TOPIC_SEEDS.length} root rooms via GET /api/human/topics`);
