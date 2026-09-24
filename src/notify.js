@@ -438,7 +438,12 @@ function loadWakeHooks(env = process.env.LYCEUM_WAKE_HOOKS) {
     }
     const anthropic = parsed.hostname === 'api.anthropic.com';
     if (anthropic && !token) continue; // routine triggers always need their token
-    hooks.set(agent.toLowerCase(), { url: url.trim(), token: token ? token.trim() : null, anthropic });
+    hooks.set(agent.toLowerCase(), {
+      url: url.trim(),
+      token: token ? token.trim() : null,
+      anthropic,
+      derivation: typeof derivationMemory !== 'undefined' ? derivationMemory.get(agent.toLowerCase()) : undefined,
+    });
   }
   return hooks;
 }
@@ -448,8 +453,21 @@ function loadWakeHooks(env = process.env.LYCEUM_WAKE_HOOKS) {
  * secret signs "<id>.<timestamp>.<body>" with HMAC-SHA256, sent as webhook-id / webhook-timestamp /
  * webhook-signature: v1,<base64>.
  */
-function standardWebhookHeaders(secret, body, id = `msg_${crypto.randomBytes(12).toString('hex')}`, timestamp = Math.floor(Date.now() / 1000)) {
-  const key = Buffer.from(secret.slice('whsec_'.length), 'base64');
+/** Ways to turn a whsec_ secret into the HMAC key: the standard first, then two seen in the wild. */
+const KEY_DERIVATIONS = {
+  standard: (secret) => Buffer.from(secret.slice('whsec_'.length), 'base64'),
+  'raw-full': (secret) => Buffer.from(secret, 'utf8'),
+  'raw-no-prefix': (secret) => Buffer.from(secret.slice('whsec_'.length), 'utf8'),
+};
+
+function standardWebhookHeaders(
+  secret,
+  body,
+  id = `msg_${crypto.randomBytes(12).toString('hex')}`,
+  timestamp = Math.floor(Date.now() / 1000),
+  derivation = 'standard'
+) {
+  const key = KEY_DERIVATIONS[derivation](secret);
   const signature = crypto.createHmac('sha256', key).update(`${id}.${timestamp}.${body}`).digest('base64');
   return { 'webhook-id': id, 'webhook-timestamp': String(timestamp), 'webhook-signature': `v1,${signature}` };
 }
@@ -472,25 +490,43 @@ async function sendWake(agent, hook, reasons) {
   const body = hook.anthropic
     ? JSON.stringify({ text })
     : JSON.stringify({ source: 'lyceum-commons', agent, text, reasons, inbox: `${publicBase()}/mcp` });
-  if (!hook.anthropic && hook.token) {
-    if (hook.token.startsWith('whsec_')) Object.assign(headers, standardWebhookHeaders(hook.token, body));
-    else headers.Authorization = `Bearer ${hook.token}`;
-  }
+  const signed = !hook.anthropic && hook.token && hook.token.startsWith('whsec_');
+  if (!hook.anthropic && hook.token && !signed) headers.Authorization = `Bearer ${hook.token}`;
+  const how = hook.anthropic ? 'anthropic routine' : signed ? 'signed' : headers.Authorization ? 'bearer token' : 'unsigned, no token';
+  // For signed hooks, try the remembered key derivation first; on 401, try the others once each.
+  const order = signed
+    ? [hook.derivation || 'standard', ...Object.keys(KEY_DERIVATIONS).filter((d) => d !== (hook.derivation || 'standard'))]
+    : [null];
   try {
-    const res = await postIPv4(hook.url, headers, body);
-    const how = hook.anthropic
-      ? 'anthropic routine'
-      : headers['webhook-signature']
-        ? 'signed (standard webhooks)'
-        : headers.Authorization
-          ? 'bearer token'
-          : 'unsigned, no token';
-    if (!res.ok) console.error(`Wake hook for ${agent} [${how}] answered ${res.status}: ${res.text.replace(/\s+/g, ' ')}`);
-    else console.log(`Wake hook for ${agent} [${how}] answered ${res.status}`);
+    for (const derivation of order) {
+      const h = derivation ? { ...headers, ...standardWebhookHeaders(hook.token, body, undefined, undefined, derivation) } : headers;
+      const res = await postIPv4(hook.url, h, body);
+      const label = derivation ? `${how}, ${derivation} key` : how;
+      if (res.ok) {
+        if (derivation) derivationMemory.set(agent, derivation);
+        console.log(`Wake hook for ${agent} [${label}] answered ${res.status}`);
+        return;
+      }
+      console.error(`Wake hook for ${agent} [${label}] answered ${res.status}: ${res.text.replace(/\s+/g, ' ')}`);
+      if (!(derivation && res.status === 401)) return;
+    }
+    if (signed) {
+      // Every derivation was refused: most likely the secret itself is incomplete. Report its shape, never its value.
+      const raw = hook.token.slice('whsec_'.length);
+      const decoded = Buffer.from(raw, 'base64');
+      console.error(
+        `Wake hook for ${agent}: all signing methods refused. Secret after whsec_: ${raw.length} chars, ` +
+          `${/^[A-Za-z0-9+/]+=*$/.test(raw) ? 'valid base64' : 'NOT valid base64'}, decodes to ${decoded.length} bytes ` +
+          `(a full Standard Webhooks secret is usually 24–64 bytes). Contains "…" or "...": ${/…|\.\.\./.test(raw)}.`
+      );
+    }
   } catch (err) {
     console.error(`Wake hook for ${agent} failed: ${err.message}`);
   }
 }
+
+/** agent → the key derivation that last worked for its signed hook. */
+const derivationMemory = new Map();
 
 function requestWake(agent, reason) {
   const hook = loadWakeHooks().get(agent.toLowerCase());

@@ -328,3 +328,34 @@ describe('standard webhooks signing', () => {
     assert.equal(hit.headers['webhook-signature'], expected['webhook-signature']);
   });
 });
+
+describe('signing fallbacks', () => {
+  it('on 401 retries with other key derivations and remembers the one that works', async () => {
+    const secret = 'whsec_MfKQ9r8GKYqrTwjUPD8ILPZIo2LaLaSw';
+    const crypto = require('crypto');
+    let accepted = 0;
+    const picky = http.createServer((req, res) => {
+      let body = '';
+      req.on('data', (d) => (body += d));
+      req.on('end', () => {
+        const want = crypto
+          .createHmac('sha256', Buffer.from(secret, 'utf8'))
+          .update(`${req.headers['webhook-id']}.${req.headers['webhook-timestamp']}.${body}`)
+          .digest('base64');
+        const ok = req.headers['webhook-signature'] === `v1,${want}`;
+        if (ok) accepted += 1;
+        res.writeHead(ok ? 200 : 401).end();
+      });
+    });
+    await new Promise((r) => picky.listen(0, '127.0.0.1', r));
+    try {
+      process.env.LYCEUM_WAKE_HOOKS = `grok-test=http://127.0.0.1:${picky.address().port}/hook|${secret}`;
+      await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
+      await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'jason', body: 'hi', awaiting: ['grok-test'] });
+      await waitFor(() => accepted === 1);
+      assert.equal(notify.loadWakeHooks().get('grok-test').derivation, 'raw-full');
+    } finally {
+      await new Promise((r) => picky.close(r));
+    }
+  });
+});
