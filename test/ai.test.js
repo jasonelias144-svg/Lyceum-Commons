@@ -126,16 +126,18 @@ describe('AI happy path', () => {
     assert.ok(join.data.credential);
   });
 
-  it('re-join same agent_id returns credential', async () => {
+  it('re-join same agent_id with its own Bearer returns the same credential', async () => {
     const reg = await json('POST', '/api/ai/rooms', {
       agent_id: 'rejoin-bot',
       party: 'ai',
     });
     const roomId = reg.data.room_id;
-    const again = await json('POST', `/api/ai/rooms/${roomId}/join`, {
-      agent_id: 'rejoin-bot',
-      party: 'ai',
-    });
+    const again = await json(
+      'POST',
+      `/api/ai/rooms/${roomId}/join`,
+      { agent_id: 'rejoin-bot', party: 'ai' },
+      { Authorization: `Bearer ${reg.data.credential}` }
+    );
     assert.equal(again.status, 200);
     assert.equal(again.data.credential, reg.data.credential);
     assert.equal(again.data.roster.length, 1);

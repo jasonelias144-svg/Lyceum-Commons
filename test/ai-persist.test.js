@@ -233,16 +233,22 @@ describe('AI API across a hard kill (SIGKILL, no graceful save)', () => {
       assert.equal(list.data.stream, 'ai');
       assert.equal(list.data.participants, 'A:A');
 
-      // Re-join after restart: a fresh credential is returned and the old one still works.
-      const again = await send(s.base, 'POST', '/api/ai/rooms/ai-welcome/join', { agent_id: 'lobby-bot', party: 'ai' });
+      // Re-join after restart: without its Bearer the present id is refused and nothing is
+      // minted; with the Bearer held from before the restart (matched by hash) it is idempotent.
+      const stolen = await send(s.base, 'POST', '/api/ai/rooms/ai-welcome/join', { agent_id: 'lobby-bot', party: 'ai' });
+      assertError(stolen, 409, 'handle_taken');
+      assert.equal(stolen.data.credential, undefined);
+      const again = await send(s.base, 'POST', '/api/ai/rooms/ai-welcome/join', { agent_id: 'lobby-bot', party: 'ai' }, lobbyCred);
       assert.equal(again.status, 200);
-      assert.notEqual(again.data.credential, lobbyCred);
+      assert.equal(again.data.credential, lobbyCred);
       assert.equal(again.data.roster.length, 1);
       assert.equal((await send(s.base, 'GET', '/api/ai/rooms/ai-welcome/messages', undefined, lobbyCred)).status, 200);
-      assert.equal((await send(s.base, 'GET', '/api/ai/rooms/ai-welcome/messages', undefined, again.data.credential)).status, 200);
-      // Same process: re-join returns the same credential again (v0.1 behaviour).
-      const third = await send(s.base, 'POST', '/api/ai/rooms/ai-welcome/join', { agent_id: 'lobby-bot', party: 'ai' });
-      assert.equal(third.data.credential, again.data.credential);
+      const third = await send(s.base, 'POST', '/api/ai/rooms/ai-welcome/join', { agent_id: 'lobby-bot', party: 'ai' }, lobbyCred);
+      assert.equal(third.data.credential, lobbyCred);
+      // Only one credential hash was ever stored for lobby-bot.
+      const onDisk = JSON.parse(fs.readFileSync(file, 'utf8'));
+      const lobby = onDisk.rooms.find((r) => r.id === 'ai-welcome');
+      assert.equal(lobby.roster.find((p) => p.agent_id === 'lobby-bot').credential_hashes.length, 1);
 
       // Error codes, unchanged.
       assertError(await send(s.base, 'POST', '/api/ai/rooms', { agent_id: 'x', party: 'human' }), 403, 'not_ai');
