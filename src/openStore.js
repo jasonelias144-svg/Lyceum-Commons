@@ -10,6 +10,7 @@
  * messages, heartbeat and any other authenticated call. Parties idle longer than the
  * presence TTL (OPEN_PRESENCE_TTL_MS, default 10 minutes, 0 turns expiry off) are
  * expired lazily whenever the room is read or changed; there are no timers.
+ * Membership (room.members) is separate from presence: expiry keeps it, leave ends it.
  */
 const crypto = require('crypto');
 
@@ -34,12 +35,49 @@ function _setClock(fn) {
   clock = typeof fn === 'function' ? fn : () => Date.now();
 }
 
-/** Presence TTL in ms, read from OPEN_PRESENCE_TTL_MS on each use. 0 disables expiry. */
+const MIN_PRESENCE_TTL_MS = 30 * 1000;
+const ttlCache = { raw: undefined, value: DEFAULT_PRESENCE_TTL_MS };
+
+/**
+ * Presence TTL in ms from OPEN_PRESENCE_TTL_MS (read on each use, parsed once per value).
+ * Only a plain integer string is accepted: 0 turns expiry off, anything below 30000 is
+ * raised to 30000, and anything else (spaces, units, hex, decimals, negatives) falls back
+ * to the 10-minute default with a warning.
+ */
 function presenceTtlMs() {
   const raw = process.env.OPEN_PRESENCE_TTL_MS;
-  if (raw === undefined || raw === '') return DEFAULT_PRESENCE_TTL_MS;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_PRESENCE_TTL_MS;
+  if (raw === ttlCache.raw) return ttlCache.value;
+  let value = DEFAULT_PRESENCE_TTL_MS;
+  if (raw !== undefined && raw !== '') {
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+      console.warn(`OPEN_PRESENCE_TTL_MS=${JSON.stringify(raw)} is not a whole number of ms; using ${DEFAULT_PRESENCE_TTL_MS}.`);
+    } else {
+      value = Number(raw);
+      if (value > 0 && value < MIN_PRESENCE_TTL_MS) {
+        console.warn(`OPEN_PRESENCE_TTL_MS=${raw} is below the ${MIN_PRESENCE_TTL_MS} ms minimum; using ${MIN_PRESENCE_TTL_MS}.`);
+        value = MIN_PRESENCE_TTL_MS;
+      }
+    }
+  }
+  ttlCache.raw = raw;
+  ttlCache.value = value;
+  return value;
+}
+
+/** One line for the startup log. */
+function describePresenceTtl() {
+  const ttl = presenceTtlMs();
+  return ttl ? `Open presence TTL: ${ttl} ms` : 'Open presence TTL: off (OPEN_PRESENCE_TTL_MS=0)';
+}
+
+/** Set when a sweep changes state (expiry or prune), so reads can ask for a snapshot save. */
+let dirty = false;
+
+/** Returns whether a sweep changed state since the last call, and clears the flag. */
+function takeDirty() {
+  const was = dirty;
+  dirty = false;
+  return was;
 }
 
 /**
@@ -138,6 +176,26 @@ function updateRoom(room, { title, visibility }) {
   }
   if (title !== undefined && title.trim()) room.title = title.trim().slice(0, 120);
   return room;
+}
+
+/**
+ * Membership is tracked apart from presence (the roster). Joining makes you a member;
+ * only an explicit leave ends it. Expiry takes you off the roster (you must join again
+ * to post) but keeps your membership, so `message` notifications and inbox unread keep
+ * reaching you while you are away. Stored as { "party:id": true } so it snapshots as JSON.
+ */
+function membersOf(room) {
+  if (!room.members || typeof room.members !== 'object') {
+    // Rooms from older snapshots: everyone on the roster is a member.
+    room.members = {};
+    for (const key of room.roster.keys()) room.members[key] = true;
+  }
+  return room.members;
+}
+
+function isMember(room, party, id) {
+  const key = rosterKey(party, id);
+  return room.roster.has(key) || Boolean(membersOf(room)[key]);
 }
 
 /**
@@ -244,9 +302,10 @@ function settleTurn(turn, by) {
 }
 
 /**
- * Self-heal: drop awaited ids that are not on the roster, unless they were handed the turn
- * within the last presence TTL (so an AI that is being woken, or an invitee, has time to
- * arrive). Stale lists such as awaiting participants who left long ago clear on first read.
+ * Self-heal: drop awaited ids that are not on the roster, unless they were handed the turn,
+ * or timed out, within the last presence TTL (so an AI that is being woken, or an invitee,
+ * has time to arrive). An absent awaited id therefore lingers at most one TTL. Stale lists
+ * such as awaiting participants who left long ago clear on first read.
  */
 function pruneAwaiting(room) {
   const turn = rawTurn(room);
@@ -262,6 +321,7 @@ function pruneAwaiting(room) {
   turn.awaiting = kept;
   awaitingSince(room);
   settleTurn(turn, null);
+  dirty = true;
   return true;
 }
 
@@ -314,6 +374,7 @@ function addMessage(room, { author, party, body, turn_id, status, awaiting, stat
     party === 'human' &&
     prev &&
     prev.party === 'ai' &&
+    room.roster.has(rosterKey('ai', prev.author)) &&
     !/(^|\s)@[^\s@]/.test(body)
   ) {
     handTo = [prev.author];
@@ -367,7 +428,7 @@ function inbox(party, id) {
     const unread = room.messages.slice(idx + 1).filter((m) => !(m.party === party && sameId(m.author, id)));
     const awaited = turn.state === 'input-required' && turn.awaiting.some((a) => sameId(a, id));
     const mentions = unread.filter((m) => mentionRe.test(m.body)).length;
-    const member = room.roster.has(key);
+    const member = isMember(room, party, id);
     if (!awaited && !mentions && !(member && unread.length)) continue;
     const last = room.messages[room.messages.length - 1];
     items.push({
@@ -420,17 +481,30 @@ function lastSeenMs(entry) {
  * an idle room keeps its history. Returns the expired { id, party } entries.
  */
 function expireIdle(room) {
+  membersOf(room);
   const ttl = presenceTtlMs();
-  if (!ttl) return [];
   const t = now();
   const expired = [];
   for (const entry of Array.from(room.roster.values())) {
-    if (t - lastSeenMs(entry) > ttl) {
+    const seen = lastSeenMs(entry);
+    // Restored entries (no last_seen, or one from before this boot) show the boot time.
+    if (!entry.last_seen || Date.parse(entry.last_seen) < seen) entry.last_seen = new Date(seen).toISOString();
+    if (ttl && t - seen > ttl) {
       removeParty(room, entry.party, entry.id, { dropTurn: false });
+      restartGrace(room, entry.id, seen + ttl);
       expired.push({ id: entry.id, party: entry.party });
     }
   }
+  if (expired.length) dirty = true;
   return expired;
+}
+
+/** An awaited party that just timed out keeps the turn for one TTL from its expiry. */
+function restartGrace(room, id, at) {
+  if (!rawTurn(room).awaiting.some((a) => sameId(a, id))) return;
+  const since = awaitingSince(room);
+  const k = String(id).toLowerCase();
+  since[k] = Math.max(since[k], at);
 }
 
 /** Lazy housekeeping on every read or change: expire idle parties, then prune the turn. */
@@ -455,6 +529,7 @@ function joinHuman(room, handle) {
   const key = rosterKey('human', handle);
   if (room.roster.has(key)) {
     touch(room, 'human', handle);
+    membersOf(room)[key] = true;
     return { room, created: false };
   }
   assertCapacity(room);
@@ -465,6 +540,7 @@ function joinHuman(room, handle) {
     joined_at: at,
     last_seen: at,
   });
+  membersOf(room)[key] = true;
   return { room, created: true };
 }
 
@@ -481,6 +557,7 @@ function joinAi(room, agentId) {
       credentials.set(token, { room_id: room.id, agent_id: agentId });
     }
     touch(room, 'ai', agentId);
+    membersOf(room)[key] = true;
     return { room, credential: existing.credential, created: false };
   }
   assertCapacity(room);
@@ -494,6 +571,7 @@ function joinAi(room, agentId) {
     credential: token,
   });
   credentials.set(token, { room_id: room.id, agent_id: agentId });
+  membersOf(room)[key] = true;
   return { room, credential: token, created: true };
 }
 
@@ -539,13 +617,28 @@ function removeParty(room, party, id, { dropTurn = true } = {}) {
   return true;
 }
 
-/** Leave; the room is deleted only when this leave empties it (never by expiry alone). */
+/**
+ * Explicit leave: off the roster and no longer a member (ends `message` notifications and
+ * inbox unread). Returns true if the leaver was present or a member. As before, any leave
+ * deletes a room whose roster is then empty (except the lobby). Expiry alone never deletes
+ * a room, so a room emptied by expiry keeps its history until someone leaves it.
+ */
+function leaveParty(room, party, id) {
+  const members = membersOf(room);
+  const key = rosterKey(party, id);
+  const wasMember = Boolean(members[key]);
+  delete members[key];
+  const wasPresent = removeParty(room, party, id);
+  maybeGc(room);
+  return wasPresent || wasMember;
+}
+
 function leaveHuman(room, handle) {
-  if (removeParty(room, 'human', handle)) maybeGc(room);
+  return leaveParty(room, 'human', handle);
 }
 
 function leaveAi(room, agentId) {
-  if (removeParty(room, 'ai', agentId)) maybeGc(room);
+  return leaveParty(room, 'ai', agentId);
 }
 
 function maybeGc(room) {
@@ -562,13 +655,18 @@ function clearAll() {
 }
 
 ensureWelcomeLobby();
+console.log(describePresenceTtl());
 
 module.exports = {
   MAX_PARTIES,
   OPEN_WELCOME_ROOM_ID,
   OPEN_WELCOME_TITLE,
   DEFAULT_PRESENCE_TTL_MS,
+  MIN_PRESENCE_TTL_MS,
   presenceTtlMs,
+  describePresenceTtl,
+  takeDirty,
+  isMember,
   createRoom,
   listRooms,
   updateRoom,

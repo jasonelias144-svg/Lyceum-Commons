@@ -11,9 +11,20 @@
 const express = require('express');
 const openStore = require('./openStore');
 const notify = require('./notify');
+const persist = require('./persist');
 const { protocolError, sendError } = require('./errors');
 
 const router = express.Router();
+
+// Expiry and turn pruning can happen on a read. The app-wide persist middleware only saves
+// after non-GET requests, so ask for a snapshot whenever a sweep changed state; otherwise a
+// revoked credential or expired ghost would come back after an unclean restart.
+router.use((req, res, next) => {
+  res.on('finish', () => {
+    if (openStore.takeDirty()) persist.scheduleSave();
+  });
+  next();
+});
 
 const HANDLE_RE = /^[^\x00-\x1f\x7f]{1,40}$/;
 const AGENT_RE = /^[a-zA-Z0-9._-]{1,64}$/;
@@ -268,16 +279,19 @@ router.get('/rooms/:id/messages', (req, res) => {
     const bearer = extractBearer(req);
     let room;
     let resolvedAgent;
+    let resolvedHandle;
 
     if (bearer) {
       ({ room, agent_id: resolvedAgent } = requireAiCredential(req, roomId));
     } else {
       room = requireRoom(roomId);
-      const handle = req.query.handle;
-      if (handle === undefined || handle === null || handle === '') {
+      const raw = req.query.handle;
+      if (raw === undefined || raw === null || String(raw).trim() === '') {
         throw protocolError('invalid_request', 'Provide ?handle= or Authorization Bearer.');
       }
-      if (!openStore.hasHuman(room, String(handle))) {
+      // Trimmed like every other handle (join, post, heartbeat).
+      resolvedHandle = String(raw).trim();
+      if (!openStore.hasHuman(room, resolvedHandle)) {
         throw protocolError('not_joined');
       }
     }
@@ -285,7 +299,7 @@ router.get('/rooms/:id/messages', (req, res) => {
     if (bearer) {
       openStore.markSeen(room, 'ai', resolvedAgent);
     } else {
-      openStore.markSeen(room, 'human', String(req.query.handle));
+      openStore.markSeen(room, 'human', resolvedHandle);
     }
     let messages = room.messages;
     const after = req.query.after;
@@ -335,8 +349,9 @@ router.post('/rooms/:id/leave', (req, res) => {
     }
     const room = requireRoom(roomId);
     const handle = validateHandle(rawHandle);
-    // leave if absent: no-op
-    openStore.leaveHuman(room, handle);
+    // A handle that is neither present nor a member gets an error and no roster (so
+    // strangers cannot read last_seen). An already-empty room is still cleaned up first.
+    if (!openStore.leaveHuman(room, handle)) throw protocolError('not_joined');
     const still = openStore.getRoom(roomId);
     res.json({
       ok: true,
