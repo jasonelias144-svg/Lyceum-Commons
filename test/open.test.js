@@ -333,7 +333,7 @@ describe('Open caps and validation', () => {
     assert.equal(res.data.error.code, 'not_joined');
   });
 
-  it('leave if absent is no-op ok', async () => {
+  it('leave if absent changes nothing and reveals no roster', async () => {
     const created = await json('POST', '/api/open/rooms', {});
     // join someone so room is not GC'd immediately... actually leave absent on empty room
     await json('POST', `/api/open/rooms/${created.data.room_id}/join`, {
@@ -343,9 +343,11 @@ describe('Open caps and validation', () => {
     const res = await json('POST', `/api/open/rooms/${created.data.room_id}/leave`, {
       handle: 'NeverJoined',
     });
-    assert.equal(res.status, 200);
-    assert.equal(res.data.ok, true);
-    assert.equal(res.data.roster.length, 1);
+    assert.equal(res.status, 403);
+    assert.equal(res.data.error.code, 'not_joined');
+    assert.equal(res.data.roster, undefined);
+    const still = await json('GET', `/api/open/rooms/${created.data.room_id}/messages?handle=Keeper`);
+    assert.equal(still.data.roster.length, 1);
   });
 });
 
