@@ -1,7 +1,9 @@
 /**
  * Open join identity: a present AI's credential is never handed to another join (RR2), and
- * one name per participant per room regardless of case or party (RR3). Also checks that the
- * MCP endpoint (authenticated by its connector key) still re-joins its agent.
+ * one name per participant per room regardless of case or lookalike spelling (RR3, NEW-3),
+ * with names across parties held only while their owner is present (NEW-1) and refusals
+ * that never repeat the held name (NEW-2). Also checks that the MCP endpoint
+ * (authenticated by its connector key) still re-joins its agent.
  */
 const { describe, it, before, after, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
@@ -59,6 +61,16 @@ async function newRoom() {
 const joinAi = (room, agent_id, headers) => json('POST', `/api/open/rooms/${room}/join`, { agent_id, party: 'ai' }, headers);
 const joinHuman = (room, handle) => json('POST', `/api/open/rooms/${room}/join`, { handle, party: 'human' });
 const bearer = (token) => ({ Authorization: `Bearer ${token}` });
+
+async function connect() {
+  const client = new Client({ name: 'rr2-test', version: '1.0.0' });
+  await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp?key=${MCP_KEY}`)));
+  return client;
+}
+async function call(client, name, args) {
+  const r = await client.callTool({ name, arguments: args });
+  return { text: r.content.map((c) => c.text).join('\n'), isError: !!r.isError };
+}
 
 describe('RR2: a present AI keeps its credential to itself', () => {
   it('a second join as a present AI gets 409 handle_taken and never sees the token', async () => {
@@ -137,16 +149,6 @@ describe('RR2: a present AI keeps its credential to itself', () => {
 });
 
 describe('RR2: MCP re-join still works', () => {
-  async function connect() {
-    const client = new Client({ name: 'rr2-test', version: '1.0.0' });
-    await client.connect(new StreamableHTTPClientTransport(new URL(`${base}/mcp?key=${MCP_KEY}`)));
-    return client;
-  }
-  async function call(client, name, args) {
-    const r = await client.callTool({ name, arguments: args });
-    return { text: r.content.map((c) => c.text).join('\n'), isError: !!r.isError };
-  }
-
   it('an MCP agent that timed out is re-joined on its next post; a web join cannot take its token', async () => {
     const room = await newRoom();
     await joinHuman(room, 'keeper');
@@ -228,10 +230,87 @@ describe('RR3: one name per participant, regardless of case or party', () => {
     t += TTL / 2 + MIN;
     const read = await json('GET', `/api/open/rooms/${room}/messages?handle=keeper`);
     assert.deepEqual(read.data.roster.map((p) => p.id), ['keeper']);
+    // In its own party, a kept member still holds its name.
     assert.equal((await joinHuman(room, 'QA-K')).status, 409);
-    assert.equal((await joinAi(room, 'qa-K')).status, 409);
     // The member itself rejoins as before.
     assert.equal((await joinHuman(room, 'qa-k')).status, 200);
+  });
+
+  it('NEW-1: a name held only by an absent member of the other party is free', async () => {
+    const room = await newRoom();
+    await joinHuman(room, 'keeper');
+    await joinHuman(room, 'other-bot');
+    t += TTL / 2;
+    await json('POST', `/api/open/rooms/${room}/heartbeat`, { handle: 'keeper' });
+    t += TTL / 2 + MIN;
+    // human other-bot has timed out but is still a member; the AI of that name may join.
+    const ai = await joinAi(room, 'other-bot');
+    assert.equal(ai.status, 200);
+    assert.ok(ai.data.credential);
+    // While the AI is here, the human can't come back under the same name.
+    const back = await joinHuman(room, 'other-bot');
+    assert.equal(back.status, 403);
+    assert.equal(back.data.error.code, 'invalid_party');
+    assert.equal((await joinHuman(room, 'Other-Bot')).status, 409);
+    // Once the AI leaves, the kept human rejoins.
+    await json('POST', `/api/open/rooms/${room}/leave`, {}, bearer(ai.data.credential));
+    assert.equal((await joinHuman(room, 'other-bot')).status, 200);
+  });
+
+  it('NEW-1: the same holds the other way round, and over MCP', async () => {
+    const room = await newRoom();
+    await joinHuman(room, 'keeper');
+    await joinAi(room, 'mcp-bot');
+    t += TTL / 2;
+    await json('POST', `/api/open/rooms/${room}/heartbeat`, { handle: 'keeper' });
+    t += TTL / 2 + MIN;
+    assert.equal((await joinHuman(room, 'mcp-bot')).status, 200);
+    const client = await connect();
+    try {
+      const r = await call(client, 'post_message', { room_id: room, body: 'hello' });
+      assert.equal(r.isError, true);
+      assert.match(r.text, /Cannot join as mcp-bot/);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it('NEW-2: a refusal does not reveal the held name, its case, or its party', async () => {
+    const room = await newRoom();
+    await joinHuman(room, 'keeper');
+    await joinHuman(room, 'other-bot');
+    t += TTL / 2;
+    await json('POST', `/api/open/rooms/${room}/heartbeat`, { handle: 'keeper' });
+    t += TTL / 2 + MIN;
+    const res = await joinHuman(room, 'OTHER-BOT');
+    assert.equal(res.status, 409);
+    const text = JSON.stringify(res.data);
+    assert.ok(!text.includes('other-bot'), text);
+    assert.ok(!/human|\bAI\b/.test(text), text);
+    assert.equal(res.data.roster, undefined);
+  });
+
+  it('NEW-3: lookalike names are the same name', async () => {
+    const room = await newRoom();
+    await joinHuman(room, 'jason');
+    for (const variant of ['j\u0430son', '\uff4a\uff41\uff53\uff4f\uff4e', 'ja\u200dson', 'jas\u00f3n']) {
+      const res = await joinHuman(room, variant);
+      assert.equal(res.status, 409, JSON.stringify(variant));
+      assert.equal(res.data.error.code, 'handle_taken');
+    }
+    for (const invisible of ['ja\u200bson', '\u202ejason', 'jason\u2066', 'ja\ufeffson']) {
+      const res = await joinHuman(room, invisible);
+      assert.equal(res.status, 400, JSON.stringify(invisible));
+      assert.equal(res.data.error.code, 'invalid_handle');
+    }
+    await joinHuman(room, 'ilk');
+    assert.equal((await joinHuman(room, '\u0130LK')).status, 409);
+    assert.equal((await joinHuman(room, '\u0131LK')).status, 409);
+    await joinAi(room, 'NOVA');
+    assert.equal((await joinHuman(room, '\u039dOVA')).status, 409);
+    // Names in other scripts are still their own names.
+    assert.equal((await joinHuman(room, '\u0928\u092e\u0938\u094d\u0924\u0947')).status, 200);
+    assert.equal((await joinHuman(room, '\u0645\u0631\u06cc\u200c\u0645')).status, 200);
   });
 
   it('a same-case rejoin is unaffected; a name freed by leave can be taken in any case', async () => {
