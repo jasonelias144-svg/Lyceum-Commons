@@ -308,7 +308,7 @@ async function deliver(sub, event, room, message) {
   if (sub.failures >= MAX_FAILURES) sub.enabled = false;
 }
 
-// ── Web Push ──────────────────────────────────────────────────────────────────────────────
+// ── Web Push ────────────────────────────────────────────────────────────────
 
 const PUSH_HOSTS = [/\.push\.apple\.com$/, /^fcm\.googleapis\.com$/, /^updates\.push\.services\.mozilla\.com$/, /\.notify\.windows\.com$/];
 let vapid = null;
@@ -545,7 +545,7 @@ function requestWake(agent, reason) {
   if (st.timer.unref) st.timer.unref();
 }
 
-// ── Dispatch ──────────────────────────────────────────────────────────────────────────
+// ── Dispatch ────────────────────────────────────────────────────────────────
 
 /** Called by openStore after every post. Never throws; deliveries run in the background. */
 function onMessage(room, message) {
