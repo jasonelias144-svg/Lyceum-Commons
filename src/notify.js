@@ -229,7 +229,8 @@ function eventFor(room, message, party, who) {
   if (message.party === party && sameId(message.author, who)) return null;
   if ((message.awaiting || []).some((a) => sameId(a, who))) return 'turn';
   if (mentions(message.body, who)) return 'mention';
-  if (room.roster.has(`${party}:${who}`)) return 'message';
+  // Members, not just those present: a member who timed out still hears about new posts.
+  if (openStore.isMember(room, party, who)) return 'message';
   return null;
 }
 
