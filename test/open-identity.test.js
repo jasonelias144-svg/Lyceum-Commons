@@ -335,3 +335,52 @@ describe('RR3: one name per participant, regardless of case or party', () => {
     assert.equal((await joinHuman('open-welcome', 'JASON')).status, 409);
   });
 });
+
+describe('Follow-ups from Recheck 8b', () => {
+  it('8b-1: blank lookalike characters do not make a new name, and a blank-only handle is refused', async () => {
+    const room = await newRoom();
+    await joinHuman(room, 'jason');
+    for (const variant of ['jason\u3164', 'jason\uffa0', 'jason\u2800', 'jason\ufe0f', 'ja\u180bson']) {
+      const res = await joinHuman(room, variant);
+      assert.equal(res.status, 409, JSON.stringify(variant));
+      assert.equal(res.data.error.code, 'handle_taken');
+    }
+    for (const blank of ['\u3164', '\u2800\u2800', '\uffa0', '\ufe0f']) {
+      const res = await joinHuman(room, blank);
+      assert.equal(res.status, 400, JSON.stringify(blank));
+      assert.equal(res.data.error.code, 'invalid_handle');
+    }
+    // Emoji with a variation selector are still their own names.
+    assert.equal((await joinHuman(room, '\u2764\ufe0f')).status, 200);
+  });
+
+  it('8b-3: an awaited name means whoever of that name is present, not an absent twin', async () => {
+    const room = await newRoom();
+    await joinHuman(room, 'keeper');
+    await joinHuman(room, 'twin');
+    t += TTL / 2;
+    await json('POST', `/api/open/rooms/${room}/heartbeat`, { handle: 'keeper' });
+    t += TTL / 2 + MIN;
+    const ai = await joinAi(room, 'twin');
+    assert.equal(ai.status, 200);
+    const posted = await json('POST', `/api/open/rooms/${room}/post`, { handle: 'keeper', body: 'over to you', awaiting: ['twin'] });
+    assert.equal(posted.status, 201);
+    const human = await json('GET', `/api/open/inbox?handle=twin`);
+    const hItem = human.data.items.find((i) => i.room_id === room);
+    assert.ok(hItem, 'the kept human still sees the room (unread)');
+    assert.equal(hItem.your_turn, false);
+    const bot = await json('GET', '/api/open/inbox', undefined, bearer(ai.data.credential));
+    assert.equal(bot.data.items.find((i) => i.room_id === room).your_turn, true);
+    const r = openStore._openRooms.get(room);
+    assert.equal(openStore.awaits(r, ['twin'], 'human', 'twin'), false);
+    assert.equal(openStore.awaits(r, ['twin'], 'ai', 'twin'), true);
+  });
+
+  it('a legacy handle with a now-refused character can still re-join; new ones cannot', async () => {
+    const room = await newRoom();
+    const r = openStore._openRooms.get(room);
+    r.members = { 'human:old\u200bname': true };
+    assert.equal((await joinHuman(room, 'old\u200bname')).status, 200);
+    assert.equal((await joinHuman(room, 'new\u200bname')).status, 400);
+  });
+});
