@@ -3,8 +3,10 @@
  * Bridging layer: mixed human + ai parties, party always labeled.
  * Separate store from Human and AI. Does not call /api/human or /api/ai.
  *
- * Verbs: create · join · post · list · leave
+ * Verbs: create · join · post · list · leave (+ heartbeat)
  * Server forces party from authenticated join kind on post.
+ * Presence: parties idle past OPEN_PRESENCE_TTL_MS (default 10 min) drop off the roster
+ * lazily; any authenticated call, reading messages or POST /rooms/:id/heartbeat keeps them.
  */
 const express = require('express');
 const openStore = require('./openStore');
@@ -97,7 +99,7 @@ function extractBearer(req) {
 function requireAiCredential(req, roomId) {
   const token = extractBearer(req);
   if (!token) throw protocolError('invalid_credential');
-  const binding = openStore.resolveCredential(token);
+  const binding = openStore.authenticate(token);
   if (!binding) throw protocolError('invalid_credential');
   if (binding.room_id !== roomId) throw protocolError('invalid_credential');
   const room = requireRoom(roomId);
@@ -348,6 +350,43 @@ router.post('/rooms/:id/leave', (req, res) => {
 });
 
 /**
+ * POST /rooms/:id/heartbeat
+ * human: { handle }
+ * ai: Authorization: Bearer
+ * Keeps a quiet participant on the roster (refreshes last_seen) without reading or posting.
+ * Idle past presence_ttl_ms, a participant drops off the roster and must join again.
+ */
+router.post('/rooms/:id/heartbeat', (req, res) => {
+  try {
+    const roomId = req.params.id;
+    const bodyIn = req.body || {};
+    let room;
+    if (extractBearer(req)) {
+      if (bodyIn.party === 'human' || (bodyIn.handle !== undefined && bodyIn.handle !== null && bodyIn.handle !== '')) {
+        throw protocolError('invalid_party');
+      }
+      ({ room } = requireAiCredential(req, roomId));
+    } else {
+      if (bodyIn.party === 'ai' || (bodyIn.agent_id !== undefined && bodyIn.agent_id !== null && bodyIn.agent_id !== '')) {
+        throw protocolError('invalid_party');
+      }
+      room = requireRoom(roomId);
+      const handle = validateHandle(bodyIn.handle);
+      if (!openStore.hasHuman(room, handle)) throw protocolError('not_joined');
+      openStore.touch(room, 'human', handle);
+    }
+    res.json({
+      ok: true,
+      ...roomMeta(room),
+      roster: openStore.listRoster(room),
+      presence_ttl_ms: openStore.presenceTtlMs(),
+    });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
+/**
  * GET /inbox?handle=  (human)  or  Authorization: Bearer (ai, any room credential)
  * Rooms whose turn awaits you, rooms mentioning you, rooms you belong to with unread messages.
  */
@@ -355,7 +394,7 @@ router.get('/inbox', (req, res) => {
   try {
     const bearer = extractBearer(req);
     if (bearer) {
-      const binding = openStore.resolveCredential(bearer);
+      const binding = openStore.authenticate(bearer);
       if (!binding) throw protocolError('invalid_credential');
       return res.json({ agent_id: binding.agent_id, items: openStore.inbox('ai', binding.agent_id) });
     }
@@ -383,6 +422,7 @@ router.post('/rooms/:id/state', (req, res) => {
       room = requireRoom(roomId);
       by = validateHandle(bodyIn.handle);
       if (!openStore.hasHuman(room, by)) throw protocolError('not_joined');
+      openStore.touch(room, 'human', by);
     }
     const { awaiting, state } = validateTurnFields(bodyIn, openStore.TURN_STATES);
     if (state === 'input-required' && !(awaiting && awaiting.length)) {
@@ -414,6 +454,7 @@ router.post('/rooms/:id/settings', (req, res) => {
       room = requireRoom(roomId);
       const handle = validateHandle(bodyIn.handle);
       if (!openStore.hasHuman(room, handle)) throw protocolError('not_joined');
+      openStore.touch(room, 'human', handle);
     }
     const { title, visibility } = bodyIn;
     if (title !== undefined && (typeof title !== 'string' || title.length > 120)) {
@@ -442,7 +483,7 @@ router.post('/notifications', async (req, res) => {
     let who;
     const bearer = extractBearer(req);
     if (bearer) {
-      const binding = openStore.resolveCredential(bearer);
+      const binding = openStore.authenticate(bearer);
       if (!binding) throw protocolError('invalid_credential');
       party = 'ai';
       who = binding.agent_id;
@@ -481,7 +522,7 @@ router.post('/push/subscribe', (req, res) => {
     let who;
     const bearer = extractBearer(req);
     if (bearer) {
-      const binding = openStore.resolveCredential(bearer);
+      const binding = openStore.authenticate(bearer);
       if (!binding) throw protocolError('invalid_credential');
       party = 'ai';
       who = binding.agent_id;
@@ -521,7 +562,7 @@ router.delete('/notifications/:id', (req, res) => {
     const bearer = extractBearer(req);
     let owner = {};
     if (bearer) {
-      const binding = openStore.resolveCredential(bearer);
+      const binding = openStore.authenticate(bearer);
       if (!binding) throw protocolError('invalid_credential');
       owner = { party: 'ai', who: binding.agent_id };
     }
