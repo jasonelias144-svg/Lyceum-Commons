@@ -343,16 +343,57 @@ function issueCredential(room, entry) {
   return token;
 }
 
+function identityError(code, detail) {
+  const err = new Error(detail || code);
+  err.code = code;
+  if (detail) err.detail = detail;
+  return err;
+}
+
+/** Does `token` hash to one of this entry's live credentials? Constant-time per hash. */
+function holdsCredential(room, entry, token) {
+  if (!token || typeof token !== 'string') return false;
+  const candidate = Buffer.from(hashCredential(token), 'hex');
+  let match = false;
+  for (const h of entry.credential_hashes) {
+    const binding = credentials.get(h);
+    if (!binding || binding.room_id !== room.id || binding.agent_id !== entry.agent_id) continue;
+    const stored = Buffer.from(h, 'hex');
+    if (stored.length === candidate.length && crypto.timingSafeEqual(stored, candidate)) match = true;
+  }
+  return match;
+}
+
+function hasLiveCredential(room, entry) {
+  return entry.credential_hashes.some((h) => {
+    const binding = credentials.get(h);
+    return Boolean(binding) && binding.room_id === room.id && binding.agent_id === entry.agent_id;
+  });
+}
+
 /**
  * Join (or re-join) an agent. Returns { room, credential, created: boolean }.
- * Re-join with same agent_id returns the credential this process minted; after a
- * restart the plaintext is gone, so a fresh one is minted and the old one keeps working.
+ *
+ * The join route is unauthenticated, so an agent that is already present never has a
+ * credential handed out (neither its live one nor a newly minted one): a re-join must
+ * present one of that agent's live credentials (`auth.credential`, the request's Bearer,
+ * matched by hash), and gets the same membership and that same token back; nothing is
+ * minted and nothing is written. Anyone else gets `handle_taken`. An agent that is absent
+ * (never joined, or left) joins fresh and gets a new credential. A present entry with no
+ * live credential at all (only possible from a partial legacy import; nobody could post
+ * or leave as it) is re-claimed like an absent id.
  */
-function joinAgent(room, agentId) {
+function joinAgent(room, agentId, auth = {}) {
   if (room.roster.has(agentId)) {
     const existing = room.roster.get(agentId);
-    if (existing.credential && credentials.has(hashCredential(existing.credential))) {
-      return { room, credential: existing.credential, created: false };
+    if (holdsCredential(room, existing, auth.credential)) {
+      return { room, credential: auth.credential, created: false };
+    }
+    if (hasLiveCredential(room, existing)) {
+      throw identityError(
+        'handle_taken',
+        `${agentId} is already present in this room. Re-join with its Bearer credential, or join after it leaves.`
+      );
     }
     const token = issueCredential(room, existing);
     save();
