@@ -509,7 +509,7 @@ describe('Handoff 7 fixes', () => {
     assert.deepEqual(read.data.turn.awaiting, []);
   });
 
-  it('F8: a leave (even by a non-member) deletes an already-empty room; expiry alone keeps it', async () => {
+  it('F8: expiry alone keeps a room and its history; a refused leave deletes nothing', async () => {
     const room = await roomWith('qa-c');
     await json('POST', `/api/open/rooms/${room}/post`, { handle: 'qa-c', body: 'history' });
     t += TTL + MIN;
@@ -519,11 +519,8 @@ describe('Handoff 7 fixes', () => {
     const res = await json('POST', `/api/open/rooms/${room}/leave`, { handle: 'someone-else' });
     assert.equal(res.status, 403);
     assert.equal(res.data.roster, undefined);
-    assert.equal(openStore._openRooms.has(room), false);
-
-    const lobbyLeave = await json('POST', '/api/open/rooms/open-welcome/leave', { handle: 'someone-else' });
-    assert.equal(lobbyLeave.status, 403);
-    assert.equal(openStore._openRooms.has('open-welcome'), true);
+    assert.equal(openStore._openRooms.has(room), true);
+    assert.equal(openStore.getRoom(room).messages.length, 1);
   });
 
   it('F10: GET messages trims the handle; restored entries show the boot time as last_seen', async () => {
@@ -537,5 +534,115 @@ describe('Handoff 7 fixes', () => {
     const old = lr.data.roster.find((p) => p.id === 'old');
     assert.ok(Date.parse(old.last_seen) > Date.parse('2026-09-25T00:00:00.000Z'));
     assert.notEqual(old.last_seen, old.joined_at);
+  });
+});
+
+describe('Handoff 7 recheck: room deletion (R1) and id case (R3)', () => {
+  const TTL = openStore.DEFAULT_PRESENCE_TTL_MS;
+  const MIN = 60 * 1000;
+  let t;
+  beforeEach(() => {
+    t = Date.now();
+    openStore._setClock(() => t);
+  });
+  afterEach(() => openStore._setClock());
+
+  /** A room with the given members and one message, then everyone idles past the TTL. */
+  async function expiredRoom(...handles) {
+    const id = (await json('POST', '/api/open/rooms', { title: 'R1', visibility: 'unlisted' })).data.room_id;
+    for (const h of handles) await json('POST', `/api/open/rooms/${id}/join`, { handle: h, party: 'human' });
+    await json('POST', `/api/open/rooms/${id}/post`, { handle: handles[handles.length - 1], body: 'history 1' });
+    t += TTL + MIN;
+    assert.equal(openStore.getRoom(id).roster.size, 0);
+    return id;
+  }
+
+  it("R1: a stranger's leave on an all-expired room is refused; the room and a kept member's inbox survive", async () => {
+    const room = await expiredRoom('qa-z', 'qa-z2');
+    const before = await json('GET', '/api/open/inbox?handle=qa-z');
+    assert.equal(before.data.items.find((i) => i.room_id === room).unread, 1);
+    for (const handle of ['stranger', 'made-up']) {
+      const res = await json('POST', `/api/open/rooms/${room}/leave`, { handle });
+      assert.equal(res.status, 403);
+      assert.equal(res.data.error.code, 'not_joined');
+      assert.equal(res.data.roster, undefined);
+    }
+    assert.equal(openStore._openRooms.has(room), true);
+    assert.equal(openStore.getRoom(room).messages.length, 1);
+    const after = await json('GET', '/api/open/inbox?handle=qa-z');
+    assert.equal(after.data.items.find((i) => i.room_id === room).unread, 1);
+    const rejoin = await json('POST', `/api/open/rooms/${room}/join`, { handle: 'qa-z', party: 'human' });
+    assert.equal(rejoin.status, 200);
+  });
+
+  it('R1: an expired member leaving while another kept member remains does not delete the room', async () => {
+    const room = await expiredRoom('qa-w1', 'qa-w2');
+    const left = await json('POST', `/api/open/rooms/${room}/leave`, { handle: 'qa-w2' });
+    assert.equal(left.status, 200);
+    assert.equal(openStore._openRooms.has(room), true);
+    assert.equal(openStore.getRoom(room).messages.length, 1);
+    const inbox = await json('GET', '/api/open/inbox?handle=qa-w1');
+    assert.equal(inbox.data.items.length, 1);
+    assert.equal(inbox.data.items[0].unread, 1);
+    // The last present member leaving does not delete it either while a kept member remains.
+    await json('POST', `/api/open/rooms/${room}/join`, { handle: 'qa-w3', party: 'human' });
+    assert.equal((await json('POST', `/api/open/rooms/${room}/leave`, { handle: 'qa-w3' })).status, 200);
+    assert.equal(openStore._openRooms.has(room), true);
+    const rejoin = await json('POST', `/api/open/rooms/${room}/join`, { handle: 'qa-w1', party: 'human' });
+    assert.equal(rejoin.status, 200);
+  });
+
+  it('R1: the last kept member leaving deletes the room', async () => {
+    const room = await expiredRoom('qa-l1', 'qa-l2');
+    assert.equal((await json('POST', `/api/open/rooms/${room}/leave`, { handle: 'qa-l1' })).status, 200);
+    assert.equal(openStore._openRooms.has(room), true);
+    assert.equal((await json('POST', `/api/open/rooms/${room}/leave`, { handle: 'qa-l2' })).status, 200);
+    assert.equal(openStore._openRooms.has(room), false);
+    const gone = await json('POST', `/api/open/rooms/${room}/join`, { handle: 'qa-l2', party: 'human' });
+    assert.equal(gone.status, 404);
+  });
+
+  it('R1: open-welcome is never deleted', async () => {
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'qa-o', party: 'human' });
+    await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'qa-o', body: 'lobby history' });
+    t += TTL + MIN;
+    assert.equal((await json('POST', '/api/open/rooms/open-welcome/leave', { handle: 'stranger' })).status, 403);
+    assert.equal(openStore._openRooms.has('open-welcome'), true);
+    assert.equal((await json('POST', '/api/open/rooms/open-welcome/leave', { handle: 'qa-o' })).status, 200);
+    assert.equal(openStore._openRooms.has('open-welcome'), true);
+    assert.equal(openStore.getRoom('open-welcome').messages.length, 1);
+  });
+
+  it('R3: ids compare case-insensitively in turn logic; a hand to qa-bot clears when QA-BOT answers', async () => {
+    const room = (await json('POST', '/api/open/rooms', { title: 'R3' })).data.room_id;
+    await json('POST', `/api/open/rooms/${room}/join`, { handle: 'qa-a', party: 'human' });
+    const lower = await json('POST', `/api/open/rooms/${room}/join`, { agent_id: 'qa-bot', party: 'ai' });
+    const upper = await json('POST', `/api/open/rooms/${room}/join`, { agent_id: 'QA-BOT', party: 'ai' });
+    const lowerAuth = { Authorization: `Bearer ${lower.data.credential}` };
+    const upperAuth = { Authorization: `Bearer ${upper.data.credential}` };
+    await json('POST', `/api/open/rooms/${room}/post`, { body: 'from qa-bot' }, lowerAuth);
+    await json('POST', `/api/open/rooms/${room}/leave`, {}, lowerAuth);
+
+    // Explicit hand to qa-bot while QA-BOT is present: QA-BOT is the addressee (same rule as
+    // awaiting, prune, notifications and inbox), so its answer clears the turn.
+    const hand = await json('POST', `/api/open/rooms/${room}/post`, { handle: 'qa-a', body: 'qa-bot?', awaiting: ['qa-bot'] });
+    assert.deepEqual(hand.data.turn.awaiting, ['qa-bot']);
+    const inbox = await json('GET', '/api/open/inbox', undefined, upperAuth);
+    assert.equal(inbox.data.items.find((i) => i.room_id === room).your_turn, true);
+    const answer = await json('POST', `/api/open/rooms/${room}/post`, { body: 'here' }, upperAuth);
+    assert.equal(answer.data.turn.state, 'open');
+    assert.deepEqual(answer.data.turn.awaiting, []);
+
+    // The implicit handoff uses the same comparison: after a post by qa-bot (now gone), a
+    // plain reply is handed on because QA-BOT is present, and QA-BOT's answer clears it.
+    const back = await json('POST', `/api/open/rooms/${room}/join`, { agent_id: 'qa-bot', party: 'ai' });
+    const backAuth = { Authorization: `Bearer ${back.data.credential}` };
+    await json('POST', `/api/open/rooms/${room}/post`, { body: 'one more thing' }, backAuth);
+    await json('POST', `/api/open/rooms/${room}/leave`, {}, backAuth);
+    const reply = await json('POST', `/api/open/rooms/${room}/post`, { handle: 'qa-a', body: 'thanks' });
+    assert.equal(reply.data.message.implicit_turn, true);
+    const again = await json('POST', `/api/open/rooms/${room}/post`, { body: 'ok' }, upperAuth);
+    assert.deepEqual(again.data.turn.awaiting, []);
+    assert.equal(again.data.turn.state, 'open');
   });
 });
