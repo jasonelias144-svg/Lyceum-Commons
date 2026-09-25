@@ -245,14 +245,17 @@ const LOOKALIKE_CAPITALS = {
 
 /**
  * The comparison form of a participant name: compatibility-normalized (fullwidth `ｊａｓｏｎ`
- * is `jason`), invisible format characters (zero-width, bidi controls) removed, whitespace
- * collapsed, lowercased, Latin accents and dots removed (`İLK` is `ilk`), and common
- * lookalike letters folded. Only for comparing; the display name is never changed.
+ * is `jason`), invisible characters (zero-width, bidi controls, Hangul fillers, variation
+ * selectors, the blank braille cell) removed, whitespace collapsed, lowercased, Latin accents
+ * and dots removed (`İLK` is `ilk`), and common lookalike letters folded. Only for comparing;
+ * the display name is never changed. A name that is empty once blanks are removed is refused.
  */
+const BLANK_RE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
+
 function nameKey(id) {
   return String(id)
     .normalize('NFKC')
-    .replace(/\p{Cf}/gu, '')
+    .replace(BLANK_RE, '')
     .replace(/\s+/gu, ' ')
     .trim()
     .replace(/./gu, (c) => LOOKALIKE_CAPITALS[c] || c)
@@ -335,6 +338,18 @@ function stampAwaiting(room, ids) {
 function inRoster(room, id, party) {
   for (const p of room.roster.values()) if ((!party || p.party === party) && sameId(p.id, id)) return true;
   return false;
+}
+
+/**
+ * Whether a name in `awaiting` means this participant. Awaited ids carry no party, and a
+ * name can be held by a human who timed out while an AI of that name is present (only one of
+ * them can be present). The name then means whoever is present, so the absent one is not told
+ * it is their turn.
+ */
+function awaits(room, awaiting, party, id) {
+  if (!(awaiting || []).some((a) => sameId(a, id))) return false;
+  const other = party === 'ai' ? 'human' : 'ai';
+  return inRoster(room, id, party) || !inRoster(room, id, other);
 }
 
 /** input-required with nobody left to wait for falls back to open (same rule as setTurn). */
@@ -469,7 +484,7 @@ function inbox(party, id) {
     const seenId = room.seen[key];
     const idx = seenId ? room.messages.findIndex((m) => m.id === seenId) : -1;
     const unread = room.messages.slice(idx + 1).filter((m) => !(m.party === party && sameId(m.author, id)));
-    const awaited = turn.state === 'input-required' && turn.awaiting.some((a) => sameId(a, id));
+    const awaited = turn.state === 'input-required' && awaits(room, turn.awaiting, party, id);
     const mentions = unread.filter((m) => mentionRe.test(m.body)).length;
     const member = isMember(room, party, id);
     if (!awaited && !mentions && !(member && unread.length)) continue;
@@ -630,7 +645,10 @@ function assertCapacity(room) {
  */
 function joinHuman(room, handle) {
   const key = rosterKey('human', handle);
-  if (INVISIBLE_RE.test(handle)) throw protocolError('invalid_handle');
+  // New names only: a handle joined before these rules (e.g. restored from a snapshot) can still re-join.
+  if (!isMember(room, 'human', handle) && (INVISIBLE_RE.test(handle) || !nameKey(handle))) {
+    throw protocolError('invalid_handle');
+  }
   assertIdFree(room, 'human', handle);
   if (room.roster.has(key)) {
     touch(room, 'human', handle);
@@ -783,6 +801,7 @@ console.log(describePresenceTtl());
 module.exports = {
   nameKey,
   sameId,
+  awaits,
   MAX_PARTIES,
   OPEN_WELCOME_ROOM_ID,
   OPEN_WELCOME_TITLE,
