@@ -13,6 +13,7 @@
  * Membership (room.members) is separate from presence: expiry keeps it, leave ends it.
  */
 const crypto = require('crypto');
+const { protocolError } = require('./errors');
 
 const MAX_PARTIES = 16;
 const OPEN_WELCOME_ROOM_ID = 'open-welcome';
@@ -223,8 +224,47 @@ function turnOf(room) {
   return turn;
 }
 
+/**
+ * Letters from other scripts that render like Latin ones, folded so that `jаson` (Cyrillic а)
+ * or `nоva` (Cyrillic о) compares as `jason` / `nova`. Deliberately small: the common
+ * Cyrillic and Greek lookalikes plus dotless i/j, not the full Unicode confusables table.
+ */
+const LOOKALIKES = {
+  а: 'a', в: 'b', е: 'e', к: 'k', м: 'm', н: 'h', о: 'o', р: 'p', с: 'c', т: 't', у: 'y', х: 'x',
+  і: 'i', ј: 'j', ѕ: 's', ԁ: 'd', ӏ: 'l', ԛ: 'q', ԝ: 'w', һ: 'h', ё: 'e', ї: 'i',
+  α: 'a', β: 'b', ε: 'e', ι: 'i', κ: 'k', ν: 'v', ο: 'o', ρ: 'p', τ: 't', υ: 'u', χ: 'x',
+  ı: 'i', ȷ: 'j',
+};
+/** Capitals are folded before lowercasing, because Greek `Ν` looks like `N` but lowercases to `ν`. */
+const LOOKALIKE_CAPITALS = {
+  А: 'a', В: 'b', Е: 'e', К: 'k', М: 'm', Н: 'h', О: 'o', Р: 'p', С: 'c', Т: 't', Х: 'x', У: 'y',
+  І: 'i', Ј: 'j', Ѕ: 's', Ӏ: 'l', Ԛ: 'q', Ԝ: 'w',
+  Α: 'a', Β: 'b', Ε: 'e', Ζ: 'z', Η: 'h', Ι: 'i', Κ: 'k', Μ: 'm', Ν: 'n', Ο: 'o', Ρ: 'p', Τ: 't',
+  Υ: 'y', Χ: 'x',
+};
+
+/**
+ * The comparison form of a participant name: compatibility-normalized (fullwidth `ｊａｓｏｎ`
+ * is `jason`), invisible format characters (zero-width, bidi controls) removed, whitespace
+ * collapsed, lowercased, Latin accents and dots removed (`İLK` is `ilk`), and common
+ * lookalike letters folded. Only for comparing; the display name is never changed.
+ */
+function nameKey(id) {
+  return String(id)
+    .normalize('NFKC')
+    .replace(/\p{Cf}/gu, '')
+    .replace(/\s+/gu, ' ')
+    .trim()
+    .replace(/./gu, (c) => LOOKALIKE_CAPITALS[c] || c)
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/./gu, (c) => LOOKALIKES[c] || c)
+    .normalize('NFC');
+}
+
 function sameId(a, b) {
-  return String(a).toLowerCase() === String(b).toLowerCase();
+  return nameKey(a) === nameKey(b);
 }
 
 function cleanAwaiting(list, except) {
@@ -262,7 +302,7 @@ function setTurn(room, { state, awaiting, note, by }, fresh) {
 }
 
 /**
- * When each awaited id was handed the turn (lower-cased id → ms), kept on the room so the
+ * When each awaited id was handed the turn (nameKey of the id → ms), kept on the room so the
  * turn object's shape is unchanged. Ids from older snapshots fall back to turn.updated_at.
  */
 function awaitingSince(room) {
@@ -272,7 +312,7 @@ function awaitingSince(room) {
   const legacy = Date.parse(turn.updated_at) || now();
   const keep = {};
   for (const id of turn.awaiting) {
-    const k = String(id).toLowerCase();
+    const k = nameKey(id);
     keep[k] = typeof since[k] === 'number' ? since[k] : legacy;
   }
   room.awaiting_since = keep;
@@ -283,14 +323,14 @@ function stampAwaiting(room, ids) {
   const since = awaitingSince(room);
   const t = now();
   for (const id of cleanAwaiting(ids)) {
-    const k = id.toLowerCase();
+    const k = nameKey(id);
     if (k in since) since[k] = t;
   }
 }
 
 /**
  * Is anyone with this id on the roster (of either party, or only `party` if given)? Turn logic
- * (awaiting, pruning, implicit handoff) always compares ids this one case-insensitive way.
+ * (awaiting, pruning, implicit handoff) always compares ids this one way (see nameKey).
  */
 function inRoster(room, id, party) {
   for (const p of room.roster.values()) if ((!party || p.party === party) && sameId(p.id, id)) return true;
@@ -319,7 +359,7 @@ function pruneAwaiting(room) {
   const since = awaitingSince(room);
   const grace = presenceTtlMs() || DEFAULT_PRESENCE_TTL_MS;
   const t = now();
-  const kept = turn.awaiting.filter((id) => inRoster(room, id) || t - since[String(id).toLowerCase()] <= grace);
+  const kept = turn.awaiting.filter((id) => inRoster(room, id) || t - since[nameKey(id)] <= grace);
   if (kept.length === turn.awaiting.length) return false;
   turn.awaiting = kept;
   awaitingSince(room);
@@ -506,7 +546,7 @@ function expireIdle(room) {
 function restartGrace(room, id, at) {
   if (!rawTurn(room).awaiting.some((a) => sameId(a, id))) return;
   const since = awaitingSince(room);
-  const k = String(id).toLowerCase();
+  const k = nameKey(id);
   since[k] = Math.max(since[k], at);
 }
 
@@ -515,6 +555,66 @@ function sweep(room) {
   const expired = expireIdle(room);
   pruneAwaiting(room);
   return expired;
+}
+
+function identityError(code, detail) {
+  const err = new Error(detail || code);
+  err.code = code;
+  if (detail) err.detail = detail;
+  return err;
+}
+
+/**
+ * One name per participant, so turn logic (which compares names with `sameId`) never confuses
+ * two participants. Names are compared by `nameKey`: case, width, accents, invisible
+ * characters and common lookalike letters don't make a new name.
+ *
+ * - In your own party, a name is held by anyone present or kept as a member (timed out but
+ *   not left): a variant of it gets `handle_taken`.
+ * - Across parties, a name is held only while its owner is present. Someone who joined once
+ *   and walked away does not block the other party forever. The exact name held by a present
+ *   participant of the other party is `invalid_party`; a variant is `handle_taken`.
+ * - Rejoining as yourself (same party, same spelling) passes if you are present. A kept member
+ *   rejoining passes unless the other party is using the name right now. Duplicates restored
+ *   from older snapshots keep rejoining under their own spelling.
+ *
+ * Error text never repeats the held name, so a refusal does not reveal who else holds it.
+ */
+function assertIdFree(room, party, id) {
+  const key = rosterKey(party, id);
+  if (room.roster.has(key)) return;
+  const members = membersOf(room);
+  const kept = Boolean(members[key]);
+  const wanted = nameKey(id);
+  const ownParty = `${party}:`;
+  const held = new Set([...room.roster.keys(), ...Object.keys(members).filter((k) => k.startsWith(ownParty))]);
+  for (const k of held) {
+    if (k === key) continue;
+    const i = k.indexOf(':');
+    const otherParty = k.slice(0, i);
+    const otherId = k.slice(i + 1);
+    if (nameKey(otherId) !== wanted) continue;
+    if (otherParty === party) {
+      if (kept) continue;
+      throw identityError('handle_taken', 'That name, or one that looks the same, is already taken in this room.');
+    }
+    if (otherId === id) {
+      throw identityError('invalid_party', `That name is in use in this room right now by ${otherParty === 'ai' ? 'an AI' : 'a human'}.`);
+    }
+    throw identityError('handle_taken', 'That name, or one that looks the same, is in use in this room right now.');
+  }
+}
+
+/**
+ * Zero-width spaces, bidi controls and other invisible marks make a handle look like another
+ * one (or display reversed). Joiners (U+200C, U+200D) stay allowed: scripts and emoji need them.
+ * AI ids are ASCII-only already.
+ */
+const INVISIBLE_RE = /[\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
+
+function sameSecret(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
 }
 
 function assertCapacity(room) {
@@ -530,6 +630,8 @@ function assertCapacity(room) {
  */
 function joinHuman(room, handle) {
   const key = rosterKey('human', handle);
+  if (INVISIBLE_RE.test(handle)) throw protocolError('invalid_handle');
+  assertIdFree(room, 'human', handle);
   if (room.roster.has(key)) {
     touch(room, 'human', handle);
     membersOf(room)[key] = true;
@@ -549,12 +651,28 @@ function joinHuman(room, handle) {
 
 /**
  * Join (or re-join) an AI agent. Returns { room, credential, created }.
+ *
+ * The join route is unauthenticated, so an agent that is already present never has its live
+ * credential handed out: a re-join must present that credential (`auth.credential`, the
+ * request's Bearer), and gets the same membership and the same token back; anyone else gets
+ * `handle_taken`. `auth.trusted` is for callers that have already authenticated the agent
+ * by other means (the MCP endpoint's connector key). An agent that is absent (never joined,
+ * left, or timed out) joins fresh and gets a new credential.
  */
-function joinAi(room, agentId) {
+function joinAi(room, agentId, auth = {}) {
   const key = rosterKey('ai', agentId);
+  assertIdFree(room, 'ai', agentId);
   if (room.roster.has(key)) {
     const existing = room.roster.get(key);
-    if (!existing.credential || !credentials.has(existing.credential)) {
+    const live = Boolean(existing.credential) && credentials.has(existing.credential);
+    const proven = live && sameSecret(auth.credential, existing.credential);
+    if (!proven && !auth.trusted) {
+      throw identityError(
+        'handle_taken',
+        `${agentId} is already present in this room. Re-join with its Bearer credential, or join after it leaves or times out.`
+      );
+    }
+    if (!live) {
       const token = mintCredential();
       existing.credential = token;
       credentials.set(token, { room_id: room.id, agent_id: agentId });
@@ -663,6 +781,8 @@ ensureWelcomeLobby();
 console.log(describePresenceTtl());
 
 module.exports = {
+  nameKey,
+  sameId,
   MAX_PARTIES,
   OPEN_WELCOME_ROOM_ID,
   OPEN_WELCOME_TITLE,

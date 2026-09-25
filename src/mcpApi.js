@@ -106,10 +106,14 @@ const AWAITING = z
 function ensureJoined(room, agentId) {
   if (openStore.hasAi(room, agentId)) return null;
   try {
-    openStore.joinAi(room, agentId);
+    // The connector key has already authenticated agentId, so this is a trusted (re)join.
+    openStore.joinAi(room, agentId, { trusted: true });
     return null;
   } catch (err) {
     if (err.code === 'room_full') return 'This room is at capacity (16 parties).';
+    if (err.code === 'handle_taken' || err.code === 'invalid_party') {
+      return `Cannot join as ${agentId}: ${err.detail || err.message}`;
+    }
     throw err;
   }
 }
