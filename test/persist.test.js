@@ -65,7 +65,7 @@ async function send(base, method, p, body, headers = {}) {
 describe('snapshot persistence', () => {
   it('survives a SIGTERM restart across human, ai, open and guest book', async () => {
     const port = await freePort();
-    const env = { LYCEUM_DATA_DIR: dataDir };
+    const env = { LYCEUM_DATA_DIR: dataDir, AI_STORE_PATH: '' };
 
     let s = await startServer(port, env);
     await send(s.base, 'POST', '/api/guestbook', { handle: 'jason', body: 'first signature' });
@@ -83,6 +83,10 @@ describe('snapshot persistence', () => {
     const exitCode = await stop(s.child);
     assert.equal(exitCode, 0);
     assert.ok(fs.existsSync(path.join(dataDir, 'lyceum-snapshot.json')));
+    // AI data lives in its own file, never in the shared snapshot.
+    assert.ok(fs.existsSync(path.join(dataDir, 'ai', 'ai-store.json')));
+    const shared = JSON.parse(fs.readFileSync(path.join(dataDir, 'lyceum-snapshot.json'), 'utf8'));
+    assert.equal(shared.ai, undefined);
 
     s = await startServer(port, env);
     try {
@@ -114,7 +118,7 @@ describe('snapshot persistence', () => {
 
   it('stays in memory only when no data directory is configured', async () => {
     const port = await freePort();
-    const env = { LYCEUM_DATA_DIR: '', RAILWAY_VOLUME_MOUNT_PATH: '' };
+    const env = { LYCEUM_DATA_DIR: '', RAILWAY_VOLUME_MOUNT_PATH: '', AI_STORE_PATH: ':memory:' };
     const s = await startServer(port, env);
     try {
       assert.match(s.log(), /in memory only/);
