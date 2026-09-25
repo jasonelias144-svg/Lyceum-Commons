@@ -4,6 +4,8 @@
  *
  * Verbs: register · join · post · list · leave (no branch/merge/topics in v0.1).
  * Credential: server-minted opaque Bearer token scoped to (room_id, agent_id).
+ * Join is unauthenticated, so a present agent_id is never handed a credential: re-join
+ * needs that agent's own Bearer, otherwise 409 handle_taken.
  * post/list/leave derive agent_id from credential — body needs only { body } / empty.
  *
  * Always-on lobby: room id `ai-welcome` (machines may join without register).
@@ -109,7 +111,8 @@ router.post('/rooms/:id/join', (req, res) => {
     const { agent_id: rawAgent, party } = req.body || {};
     assertAiParty(party);
     const agentId = validateAgentId(rawAgent);
-    const { credential } = aiStore.joinAgent(room, agentId);
+    // An agent that is already present re-joins only with its own Bearer (never handed out here).
+    const { credential } = aiStore.joinAgent(room, agentId, { credential: extractBearer(req) });
     res.json({
       ...roomMeta(room),
       credential,
@@ -117,6 +120,7 @@ router.post('/rooms/:id/join', (req, res) => {
     });
   } catch (err) {
     if (err.code === 'room_full') return sendError(res, protocolError('room_full'));
+    if (err.code === 'handle_taken') return sendError(res, protocolError(err.code, err.detail));
     sendError(res, err);
   }
 });
