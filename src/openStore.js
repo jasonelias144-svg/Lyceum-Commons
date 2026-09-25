@@ -288,9 +288,12 @@ function stampAwaiting(room, ids) {
   }
 }
 
-/** Is anyone (either party) with this id on the roster? Ids compare case-insensitively. */
-function inRoster(room, id) {
-  for (const p of room.roster.values()) if (sameId(p.id, id)) return true;
+/**
+ * Is anyone with this id on the roster (of either party, or only `party` if given)? Turn logic
+ * (awaiting, pruning, implicit handoff) always compares ids this one case-insensitive way.
+ */
+function inRoster(room, id, party) {
+  for (const p of room.roster.values()) if ((!party || p.party === party) && sameId(p.id, id)) return true;
   return false;
 }
 
@@ -374,7 +377,7 @@ function addMessage(room, { author, party, body, turn_id, status, awaiting, stat
     party === 'human' &&
     prev &&
     prev.party === 'ai' &&
-    room.roster.has(rosterKey('ai', prev.author)) &&
+    inRoster(room, prev.author, 'ai') &&
     !/(^|\s)@[^\s@]/.test(body)
   ) {
     handTo = [prev.author];
@@ -619,18 +622,18 @@ function removeParty(room, party, id, { dropTurn = true } = {}) {
 
 /**
  * Explicit leave: off the roster and no longer a member (ends `message` notifications and
- * inbox unread). Returns true if the leaver was present or a member. As before, any leave
- * deletes a room whose roster is then empty (except the lobby). Expiry alone never deletes
- * a room, so a room emptied by expiry keeps its history until someone leaves it.
+ * inbox unread), and no longer awaited. Someone who is neither present nor a member gets
+ * false and changes nothing. Only a real leave can delete a room, and only when it leaves
+ * nobody present and no kept members (see maybeGc). Expiry never deletes a room.
  */
 function leaveParty(room, party, id) {
   const members = membersOf(room);
   const key = rosterKey(party, id);
-  const wasMember = Boolean(members[key]);
+  if (!room.roster.has(key) && !members[key]) return false;
   delete members[key];
-  const wasPresent = removeParty(room, party, id);
+  if (!removeParty(room, party, id)) dropAwaiting(room, id); // an expired member leaving
   maybeGc(room);
-  return wasPresent || wasMember;
+  return true;
 }
 
 function leaveHuman(room, handle) {
@@ -641,10 +644,12 @@ function leaveAi(room, agentId) {
   return leaveParty(room, 'ai', agentId);
 }
 
+/** Delete a room with nobody present and no kept members. The lobby is never deleted. */
 function maybeGc(room) {
-  if (room.roster.size === 0 && room.id !== OPEN_WELCOME_ROOM_ID) {
-    openRooms.delete(room.id);
-  }
+  if (room.id === OPEN_WELCOME_ROOM_ID) return false;
+  if (room.roster.size > 0 || Object.keys(membersOf(room)).length > 0) return false;
+  openRooms.delete(room.id);
+  return true;
 }
 
 function clearAll() {

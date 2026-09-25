@@ -349,8 +349,8 @@ router.post('/rooms/:id/leave', (req, res) => {
     }
     const room = requireRoom(roomId);
     const handle = validateHandle(rawHandle);
-    // A handle that is neither present nor a member gets an error and no roster (so
-    // strangers cannot read last_seen). An already-empty room is still cleaned up first.
+    // A handle that is neither present nor a member is refused before anything changes: no
+    // roster in the reply (strangers cannot read last_seen) and the room is never deleted.
     if (!openStore.leaveHuman(room, handle)) throw protocolError('not_joined');
     const still = openStore.getRoom(roomId);
     res.json({
