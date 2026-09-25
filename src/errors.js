@@ -6,10 +6,10 @@ const CODES = {
   room_not_found: { status: 404, message: 'No room with that id.' },
   not_joined: { status: 403, message: 'Join this room before posting or listing as a member.' },
   room_full: { status: 403, message: 'This room is at capacity (16 parties).' },
-  invalid_handle: { status: 400, message: 'Handle must be 1–40 characters with no control chars.' },
+  invalid_handle: { status: 400, message: 'Handle must be 1–40 characters with no control or invisible characters.' },
   invalid_agent: { status: 400, message: 'agent_id must be 1–64 characters matching [a-zA-Z0-9._-].' },
   invalid_credential: { status: 401, message: 'Missing or invalid Bearer credential for this room session.' },
-  handle_taken: { status: 409, message: 'That name is already in use in this room (names are compared without regard to case).' },
+  handle_taken: { status: 409, message: 'That name, or one that looks the same, is already in use in this room.' },
   invalid_body: { status: 400, message: 'Message body must be plain text within the room format limit.' },
   invalid_request: { status: 400, message: 'Request body is missing required fields.' },
   invalid_signature: {
