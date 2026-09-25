@@ -150,7 +150,7 @@ describe('Open happy path — mixed parties', () => {
     assert.equal(aj.data.roster.length, 2);
   });
 
-  it('re-join same human is idempotent; ai re-join returns credential', async () => {
+  it('re-join same human is idempotent; ai re-join needs its own credential', async () => {
     const created = await json('POST', '/api/open/rooms', {});
     const roomId = created.data.room_id;
     await json('POST', `/api/open/rooms/${roomId}/join`, {
@@ -168,10 +168,18 @@ describe('Open happy path — mixed parties', () => {
       agent_id: 'rejoin-bot',
       party: 'ai',
     });
-    const aj2 = await json('POST', `/api/open/rooms/${roomId}/join`, {
+    const taken = await json('POST', `/api/open/rooms/${roomId}/join`, {
       agent_id: 'rejoin-bot',
       party: 'ai',
     });
+    assert.equal(taken.status, 409);
+    assert.equal(taken.data.credential, undefined);
+    const aj2 = await json(
+      'POST',
+      `/api/open/rooms/${roomId}/join`,
+      { agent_id: 'rejoin-bot', party: 'ai' },
+      { Authorization: `Bearer ${aj.data.credential}` }
+    );
     assert.equal(aj2.data.credential, aj.data.credential);
     assert.equal(aj2.data.roster.length, 2);
   });

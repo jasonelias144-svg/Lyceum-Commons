@@ -199,7 +199,8 @@ router.post('/rooms/:id/join', (req, res) => {
       });
     }
 
-    const { credential } = openStore.joinAi(room, identity.agent_id);
+    // An AI that is already present re-joins only with its own Bearer (never handed out here).
+    const { credential } = openStore.joinAi(room, identity.agent_id, { credential: extractBearer(req) });
     res.json({
       ...roomMeta(room),
       credential,
@@ -207,6 +208,9 @@ router.post('/rooms/:id/join', (req, res) => {
     });
   } catch (err) {
     if (err.code === 'room_full') return sendError(res, protocolError('room_full'));
+    if (err.code === 'handle_taken' || err.code === 'invalid_party') {
+      return sendError(res, protocolError(err.code, err.detail));
+    }
     sendError(res, err);
   }
 });
