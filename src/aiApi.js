@@ -127,16 +127,7 @@ router.post('/rooms/:id/post', (req, res) => {
     const { room, agent_id: agentId } = requireCredential(req, req.params.id);
     const { body: rawBody } = req.body || {};
     const body = validateBody(rawBody);
-    const crypto = require('crypto');
-    const message = {
-      id: `msg_${crypto.randomBytes(6).toString('hex')}`,
-      room_id: room.id,
-      author: agentId,
-      party: 'ai',
-      body,
-      created_at: new Date().toISOString(),
-    };
-    room.messages.push(message);
+    const message = aiStore.appendMessage(room, agentId, body);
     res.status(201).json({ message });
   } catch (err) {
     sendError(res, err);

@@ -37,6 +37,20 @@ if (require.main === module) {
   } catch (err) {
     console.error('Could not restore snapshot; starting empty:', err);
   }
+  // AI stream: its own store at its own path (never inside the shared snapshot).
+  // If the path cannot be used at all (e.g. unwritable), log loudly and run the AI
+  // stream in memory rather than crash-loop the whole site.
+  try {
+    const ai = aiStore.attach(aiStore.resolveStorePath(), { legacyAi: persist.readLegacyAi() });
+    console.log(
+      ai.file
+        ? `AI store: ${ai.file} (${ai.status}, ${ai.rooms} room${ai.rooms === 1 ? '' : 's'})`
+        : 'AI store: in memory only (AI_STORE_PATH=:memory:)'
+    );
+  } catch (err) {
+    aiStore.detach();
+    console.error('AI store could not be opened; AI stream is IN MEMORY ONLY this run:', err);
+  }
 }
 
 app.use(express.json({ limit: '64kb' }));
