@@ -1,6 +1,9 @@
 /**
- * Snapshot persistence — keeps rooms, messages, rosters, credentials and the guest
- * book across restarts by writing all four in-memory stores to one JSON file.
+ * Snapshot persistence — keeps Human rooms and guest book, and Open rooms, rosters,
+ * credentials and webhooks across restarts by writing them to one JSON file.
+ * The AI stream is NOT in this file: it has its own store (src/aiStore.js, AI_STORE_PATH).
+ * `readLegacyAi()` only reads the AI section older snapshots carried, so aiStore can
+ * import it once; the next save drops that section.
  *
  * Where: LYCEUM_DATA_DIR, else RAILWAY_VOLUME_MOUNT_PATH (set automatically when a
  * Railway Volume is attached). Neither set → in-memory only, as before.
@@ -13,7 +16,6 @@
 const fs = require('fs');
 const path = require('path');
 const store = require('./store');
-const aiStore = require('./aiStore');
 const openStore = require('./openStore');
 const notify = require('./notify');
 
@@ -54,7 +56,6 @@ function serialize() {
     version: VERSION,
     saved_at: new Date().toISOString(),
     human: { rooms: roomsOut(store._rooms), guestbook: store._getGuestbook() },
-    ai: { rooms: roomsOut(aiStore._aiRooms), credentials: Array.from(aiStore._credentials.entries()) },
     open: {
       rooms: roomsOut(openStore._openRooms),
       credentials: Array.from(openStore._credentials.entries()),
@@ -70,14 +71,11 @@ function restore(snap) {
   }
   roomsIn(store._rooms, snap.human && snap.human.rooms);
   store._setGuestbook((snap.human && snap.human.guestbook) || []);
-  roomsIn(aiStore._aiRooms, snap.ai && snap.ai.rooms);
-  mapIn(aiStore._credentials, snap.ai && snap.ai.credentials);
   roomsIn(openStore._openRooms, snap.open && snap.open.rooms);
   mapIn(openStore._credentials, snap.open && snap.open.credentials);
   notify._subscriptions.clear();
   for (const sub of (snap.open && snap.open.webhooks) || []) notify._subscriptions.set(sub.id, sub);
   store.ensureSeededRooms();
-  aiStore.ensureWelcomeLobby();
   openStore.ensureWelcomeLobby();
 }
 
@@ -87,6 +85,18 @@ function load() {
   if (!file || !fs.existsSync(file)) return false;
   restore(JSON.parse(fs.readFileSync(file, 'utf8')));
   return true;
+}
+
+/** AI section of an older snapshot (read-only, for aiStore's one-time import), or null. */
+function readLegacyAi() {
+  const file = snapshotPath();
+  if (!file || !fs.existsSync(file)) return null;
+  try {
+    const snap = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return (snap && snap.ai) || null;
+  } catch {
+    return null;
+  }
 }
 
 function saveNow() {
@@ -143,6 +153,7 @@ module.exports = {
   serialize,
   restore,
   load,
+  readLegacyAi,
   saveNow,
   scheduleSave,
   middleware,
