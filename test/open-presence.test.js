@@ -84,7 +84,9 @@ describe('Leave frees the turn', () => {
   it('a leaver who shares an id with someone still present stays awaited', async () => {
     await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
     await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'nova', party: 'human' });
-    await json('POST', '/api/open/rooms/open-welcome/join', { agent_id: 'nova', party: 'ai' });
+    // Joins now refuse a second "nova"; this pair can only come from an older snapshot.
+    const at = new Date().toISOString();
+    openStore._openRooms.get('open-welcome').roster.set('ai:nova', { id: 'nova', party: 'ai', joined_at: at, last_seen: at });
     await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'jason', body: 'Nova?', awaiting: ['nova'] });
     const left = await json('POST', '/api/open/rooms/open-welcome/leave', { handle: 'nova' });
     assert.equal(left.data.turn.state, 'input-required');
@@ -236,7 +238,7 @@ describe('Presence TTL', () => {
 
     // Re-joining refreshes as well (claude-x last active at the inbox call, jason at the read).
     t += MIN / 2; // claude-x idle 9.5 min
-    const rejoin = await json('POST', '/api/open/rooms/open-welcome/join', { agent_id: 'claude-x', party: 'ai' });
+    const rejoin = await json('POST', '/api/open/rooms/open-welcome/join', { agent_id: 'claude-x', party: 'ai' }, auth);
     assert.equal(rejoin.data.credential, ai.data.credential);
     t += 9.9 * MIN; // claude-x idle 9.9 min, jason 10.4 min
 
@@ -617,11 +619,15 @@ describe('Handoff 7 recheck: room deletion (R1) and id case (R3)', () => {
     const room = (await json('POST', '/api/open/rooms', { title: 'R3' })).data.room_id;
     await json('POST', `/api/open/rooms/${room}/join`, { handle: 'qa-a', party: 'human' });
     const lower = await json('POST', `/api/open/rooms/${room}/join`, { agent_id: 'qa-bot', party: 'ai' });
-    const upper = await json('POST', `/api/open/rooms/${room}/join`, { agent_id: 'QA-BOT', party: 'ai' });
+    // Joins now refuse case variants (409); this pair can only come from an older snapshot.
+    assert.equal((await json('POST', `/api/open/rooms/${room}/join`, { agent_id: 'QA-BOT', party: 'ai' })).status, 409);
+    const at = new Date(t).toISOString();
+    openStore._openRooms.get(room).roster.set('ai:QA-BOT', { id: 'QA-BOT', party: 'ai', joined_at: at, last_seen: at, credential: 'legacy-upper-token' });
+    openStore._credentials.set('legacy-upper-token', { room_id: room, agent_id: 'QA-BOT' });
     const lowerAuth = { Authorization: `Bearer ${lower.data.credential}` };
-    const upperAuth = { Authorization: `Bearer ${upper.data.credential}` };
-    await json('POST', `/api/open/rooms/${room}/post`, { body: 'from qa-bot' }, lowerAuth);
-    await json('POST', `/api/open/rooms/${room}/leave`, {}, lowerAuth);
+    const upperAuth = { Authorization: 'Bearer legacy-upper-token' };
+    assert.equal((await json('POST', `/api/open/rooms/${room}/post`, { body: 'from qa-bot' }, lowerAuth)).status, 201);
+    assert.equal((await json('POST', `/api/open/rooms/${room}/leave`, {}, lowerAuth)).status, 200);
 
     // Explicit hand to qa-bot while QA-BOT is present: QA-BOT is the addressee (same rule as
     // awaiting, prune, notifications and inbox), so its answer clears the turn.
@@ -630,15 +636,19 @@ describe('Handoff 7 recheck: room deletion (R1) and id case (R3)', () => {
     const inbox = await json('GET', '/api/open/inbox', undefined, upperAuth);
     assert.equal(inbox.data.items.find((i) => i.room_id === room).your_turn, true);
     const answer = await json('POST', `/api/open/rooms/${room}/post`, { body: 'here' }, upperAuth);
+    assert.equal(answer.status, 201);
     assert.equal(answer.data.turn.state, 'open');
     assert.deepEqual(answer.data.turn.awaiting, []);
 
     // The implicit handoff uses the same comparison: after a post by qa-bot (now gone), a
     // plain reply is handed on because QA-BOT is present, and QA-BOT's answer clears it.
-    const back = await json('POST', `/api/open/rooms/${room}/join`, { agent_id: 'qa-bot', party: 'ai' });
-    const backAuth = { Authorization: `Bearer ${back.data.credential}` };
-    await json('POST', `/api/open/rooms/${room}/post`, { body: 'one more thing' }, backAuth);
-    await json('POST', `/api/open/rooms/${room}/leave`, {}, backAuth);
+    // qa-bot cannot join again while QA-BOT holds the name, so it is restored the same way.
+    assert.equal((await json('POST', `/api/open/rooms/${room}/join`, { agent_id: 'qa-bot', party: 'ai' })).status, 409);
+    openStore._openRooms.get(room).roster.set('ai:qa-bot', { id: 'qa-bot', party: 'ai', joined_at: at, last_seen: at, credential: 'legacy-lower-token' });
+    openStore._credentials.set('legacy-lower-token', { room_id: room, agent_id: 'qa-bot' });
+    const backAuth = { Authorization: 'Bearer legacy-lower-token' };
+    assert.equal((await json('POST', `/api/open/rooms/${room}/post`, { body: 'one more thing' }, backAuth)).status, 201);
+    assert.equal((await json('POST', `/api/open/rooms/${room}/leave`, {}, backAuth)).status, 200);
     const reply = await json('POST', `/api/open/rooms/${room}/post`, { handle: 'qa-a', body: 'thanks' });
     assert.equal(reply.data.message.implicit_turn, true);
     const again = await json('POST', `/api/open/rooms/${room}/post`, { body: 'ok' }, upperAuth);
