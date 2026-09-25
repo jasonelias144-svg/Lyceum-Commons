@@ -517,6 +517,43 @@ function sweep(room) {
   return expired;
 }
 
+function identityError(code, detail) {
+  const err = new Error(detail || code);
+  err.code = code;
+  if (detail) err.detail = detail;
+  return err;
+}
+
+/**
+ * One name per participant in a room, across both parties and regardless of case, so turn
+ * logic (which compares ids case-insensitively) can never confuse two participants. A new
+ * identity may not take a name that someone present or kept as a member already holds:
+ * the exact name held by the other party is `invalid_party`; any other case variant is
+ * `handle_taken`. An existing identity (same party, same case) always passes: that is a
+ * rejoin, and it keeps working for duplicates restored from older snapshots.
+ */
+function assertIdFree(room, party, id) {
+  const key = rosterKey(party, id);
+  const members = membersOf(room);
+  if (room.roster.has(key) || members[key]) return;
+  const held = new Set([...room.roster.keys(), ...Object.keys(members)]);
+  for (const k of held) {
+    const i = k.indexOf(':');
+    const otherParty = k.slice(0, i);
+    const otherId = k.slice(i + 1);
+    if (!sameId(otherId, id)) continue;
+    if (otherParty !== party && otherId === id) {
+      throw identityError('invalid_party', `${id} is already in this room as ${otherParty === 'ai' ? 'an AI' : 'a human'}.`);
+    }
+    throw identityError('handle_taken', `${otherId} is already in this room; names are compared without regard to case.`);
+  }
+}
+
+function sameSecret(a, b) {
+  if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
+  return crypto.timingSafeEqual(Buffer.from(a), Buffer.from(b));
+}
+
 function assertCapacity(room) {
   if (room.roster.size >= MAX_PARTIES) {
     const err = new Error('room_full');
@@ -530,6 +567,7 @@ function assertCapacity(room) {
  */
 function joinHuman(room, handle) {
   const key = rosterKey('human', handle);
+  assertIdFree(room, 'human', handle);
   if (room.roster.has(key)) {
     touch(room, 'human', handle);
     membersOf(room)[key] = true;
@@ -549,12 +587,28 @@ function joinHuman(room, handle) {
 
 /**
  * Join (or re-join) an AI agent. Returns { room, credential, created }.
+ *
+ * The join route is unauthenticated, so an agent that is already present never has its live
+ * credential handed out: a re-join must present that credential (`auth.credential`, the
+ * request's Bearer), and gets the same membership and the same token back; anyone else gets
+ * `handle_taken`. `auth.trusted` is for callers that have already authenticated the agent
+ * by other means (the MCP endpoint's connector key). An agent that is absent (never joined,
+ * left, or timed out) joins fresh and gets a new credential.
  */
-function joinAi(room, agentId) {
+function joinAi(room, agentId, auth = {}) {
   const key = rosterKey('ai', agentId);
+  assertIdFree(room, 'ai', agentId);
   if (room.roster.has(key)) {
     const existing = room.roster.get(key);
-    if (!existing.credential || !credentials.has(existing.credential)) {
+    const live = Boolean(existing.credential) && credentials.has(existing.credential);
+    const proven = live && sameSecret(auth.credential, existing.credential);
+    if (!proven && !auth.trusted) {
+      throw identityError(
+        'handle_taken',
+        `${agentId} is already present in this room. Re-join with its Bearer credential, or join after it leaves or times out.`
+      );
+    }
+    if (!live) {
       const token = mintCredential();
       existing.credential = token;
       credentials.set(token, { room_id: room.id, agent_id: agentId });
