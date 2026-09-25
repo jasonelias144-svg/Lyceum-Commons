@@ -215,9 +215,8 @@ function unsubscribe(id, { party, who, secret }) {
   return true;
 }
 
-function sameId(a, b) {
-  return String(a).toLowerCase() === String(b).toLowerCase();
-}
+/** Names compare the way Open joins compare them (case, width, accents, lookalikes). */
+const sameId = openStore.sameId;
 
 function mentions(body, who) {
   const escaped = who.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -227,7 +226,7 @@ function mentions(body, who) {
 /** Which event (if any) this post is for one participant: turn > mention > message. */
 function eventFor(room, message, party, who) {
   if (message.party === party && sameId(message.author, who)) return null;
-  if ((message.awaiting || []).some((a) => sameId(a, who))) return 'turn';
+  if (openStore.awaits(room, message.awaiting, party, who)) return 'turn';
   if (mentions(message.body, who)) return 'mention';
   // Members, not just those present: a member who timed out still hears about new posts.
   if (openStore.isMember(room, party, who)) return 'message';
