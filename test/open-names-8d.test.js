@@ -4,6 +4,7 @@
  */
 const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
+const { guestHeaders, remember } = require('./guest-jar');
 const openStore = require('../src/openStore');
 
 let server;
@@ -28,10 +29,12 @@ beforeEach(() => openStore.clearAll());
 async function json(method, path, body) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...guestHeaders(path, body) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  return { status: res.status, data: await res.json().catch(() => null) };
+  const data = await res.json().catch(() => null);
+  remember(path, body, data);
+  return { status: res.status, data };
 }
 
 const newRoom = async () => (await json('POST', '/api/open/rooms', { title: '8d' })).data.room_id;

@@ -142,12 +142,15 @@ describe('MCP endpoint', () => {
     assert.match(exported.text, /Participants: claude-test \(ai\), grok-test \(ai\)/);
 
     // Humans see the same room through the Open API.
-    await fetch(`${base}/api/open/rooms/${roomId}/join`, {
+    const joined = await fetch(`${base}/api/open/rooms/${roomId}/join`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ handle: 'jason', party: 'human' }),
     });
-    const res = await fetch(`${base}/api/open/rooms/${roomId}/messages?handle=jason`);
+    const { guest_key: guestKey } = await joined.json();
+    const res = await fetch(`${base}/api/open/rooms/${roomId}/messages?handle=jason`, {
+      headers: { 'X-Lyceum-Guest': guestKey },
+    });
     const data = await res.json();
     assert.equal(data.messages.length, 3);
     assert.equal(data.messages[1].turn_id, 'SBO-001-Claude');
