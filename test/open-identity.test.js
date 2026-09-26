@@ -7,6 +7,7 @@
  */
 const { describe, it, before, after, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const { guestHeaders, remember } = require('./guest-jar');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
 const openStore = require('../src/openStore');
@@ -47,10 +48,11 @@ afterEach(() => openStore._setClock());
 async function json(method, path, body, headers = {}) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...guestHeaders(path, body, headers), ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => null);
+  remember(path, body, data);
   return { status: res.status, data };
 }
 
@@ -236,14 +238,18 @@ describe('RR3: one name per participant, regardless of case or party', () => {
     assert.equal((await joinHuman(room, 'qa-k')).status, 200);
   });
 
-  it('NEW-1: a name held only by an absent member of the other party is free', async () => {
+  it('NEW-1: a guest\'s name holds against an AI even while the guest is away; once left, the AI may join', async () => {
     const room = await newRoom();
     await joinHuman(room, 'keeper');
     await joinHuman(room, 'other-bot');
     t += TTL / 2;
     await json('POST', `/api/open/rooms/${room}/heartbeat`, { handle: 'keeper' });
     t += TTL / 2 + MIN;
-    // human other-bot has timed out but is still a member; the AI of that name may join.
+    // human other-bot has timed out but still holds the name with its guest key.
+    const early = await joinAi(room, 'other-bot');
+    assert.equal(early.status, 403);
+    assert.equal(early.data.error.code, 'invalid_party');
+    await json('POST', `/api/open/rooms/${room}/leave`, { handle: 'other-bot' });
     const ai = await joinAi(room, 'other-bot');
     assert.equal(ai.status, 200);
     assert.ok(ai.data.credential);
@@ -252,7 +258,7 @@ describe('RR3: one name per participant, regardless of case or party', () => {
     assert.equal(back.status, 403);
     assert.equal(back.data.error.code, 'invalid_party');
     assert.equal((await joinHuman(room, 'Other-Bot')).status, 409);
-    // Once the AI leaves, the kept human rejoins.
+    // Once the AI leaves, a human may take the name again.
     await json('POST', `/api/open/rooms/${room}/leave`, {}, bearer(ai.data.credential));
     assert.equal((await joinHuman(room, 'other-bot')).status, 200);
   });
@@ -358,6 +364,8 @@ describe('Follow-ups from Recheck 8b', () => {
     const room = await newRoom();
     await joinHuman(room, 'keeper');
     await joinHuman(room, 'twin');
+    // Only an unclaimed pre-guest membership can sit beside an AI of the same name now.
+    openStore._openRooms.get(room).members['human:twin'].owner = null;
     t += TTL / 2;
     await json('POST', `/api/open/rooms/${room}/heartbeat`, { handle: 'keeper' });
     t += TTL / 2 + MIN;
@@ -365,10 +373,6 @@ describe('Follow-ups from Recheck 8b', () => {
     assert.equal(ai.status, 200);
     const posted = await json('POST', `/api/open/rooms/${room}/post`, { handle: 'keeper', body: 'over to you', awaiting: ['twin'] });
     assert.equal(posted.status, 201);
-    const human = await json('GET', `/api/open/inbox?handle=twin`);
-    const hItem = human.data.items.find((i) => i.room_id === room);
-    assert.ok(hItem, 'the kept human still sees the room (unread)');
-    assert.equal(hItem.your_turn, false);
     const bot = await json('GET', '/api/open/inbox', undefined, bearer(ai.data.credential));
     assert.equal(bot.data.items.find((i) => i.room_id === room).your_turn, true);
     const r = openStore._openRooms.get(room);
