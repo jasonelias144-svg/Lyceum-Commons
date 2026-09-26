@@ -74,4 +74,51 @@ describe('Follow-ups from Handoff 8d', () => {
     const item = inbox.data.items.find((i) => i.room_id === room);
     assert.equal(item.mentions, 1);
   });
+
+  it('8e-2: a name ends where a word ends in any script; the @ must start a word', () => {
+    const m = openStore.mentionsName;
+    for (const [body, who] of [['hi @anaïs', 'ana'], ['hi @अनिल', 'अन'], ['hi @王小明', '王'], ['hi @анна', 'ah'],
+      ['hi @ ana', 'ana'], ['bob@ana', 'ana'], ['@ana@bo', 'bo'], ['see x.org/@ana', 'ana'], ['run `@ana` first', 'ana']]) {
+      assert.equal(m(body, who), false, body);
+    }
+    for (const [body, who] of [['hi @anaïs', 'anaïs'], ['hi @अनिल!', 'अनिल'], ['@王小明 你好', '王小明'],
+      ['@ana@bo', 'ana'], ['@ana,@bo', 'bo'], ['line\n@ana\nnext', 'ana'], ['`x` then @ana', 'ana']]) {
+      assert.equal(m(body, who), true, body);
+    }
+  });
+
+  it('8e-1: a message full of @s is cheap to check against many names', () => {
+    const names = Array.from({ length: 500 }, (_, n) => `n${n}-${'x'.repeat(36)}`.slice(0, 40));
+    const bodies = [
+      '@'.repeat(16000),
+      '@a '.repeat(5333),
+      ('@' + '\u00e9 '.repeat(27)).repeat(290),
+      ('@' + 'x'.repeat(55) + ' ').repeat(280),
+      ('@' + 'ana '.repeat(14)).repeat(280),
+    ];
+    for (const [n, body] of bodies.entries()) {
+      const fresh = `${body} #${Date.now()}-${n}`;
+      const t0 = process.hrtime.bigint();
+      for (const who of names) openStore.mentionsName(fresh, who);
+      const ms = Number(process.hrtime.bigint() - t0) / 1e6;
+      assert.ok(ms < 400, `body ${n} took ${ms.toFixed(0)} ms against 500 names`);
+    }
+    // Only the first MAX_MENTIONS_SCANNED @s count.
+    const late = '@x '.repeat(openStore.MAX_MENTIONS_SCANNED) + '@ana';
+    assert.equal(openStore.mentionsName(late, 'ana'), false);
+    assert.equal(openStore.mentionsName('@x '.repeat(openStore.MAX_MENTIONS_SCANNED - 1) + '@ana', 'ana'), true);
+  });
+
+  it('8e-1: a post of 4,000 @s and the inbox after it stay fast over HTTP', async () => {
+    const room = await newRoom();
+    await joinHuman(room, 'x');
+    await joinHuman(room, 'ana');
+    let t0 = Date.now();
+    const posted = await json('POST', `/api/open/rooms/${room}/post`, { handle: 'x', body: '@'.repeat(4000) });
+    assert.equal(posted.status, 201);
+    assert.ok(Date.now() - t0 < 1000, `post took ${Date.now() - t0} ms`);
+    t0 = Date.now();
+    await json('GET', '/api/open/inbox?handle=ana');
+    assert.ok(Date.now() - t0 < 1000, `inbox took ${Date.now() - t0} ms`);
+  });
 });

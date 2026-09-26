@@ -271,25 +271,64 @@ function sameId(a, b) {
   return nameKey(a) === nameKey(b);
 }
 
+/** Longest name a mention can spell, in code points: 40-unit handles plus folded-away blanks. */
+const MENTION_SPAN = 56;
+/** Only the first this-many @s in a message are read as mentions (bounds the work per post). */
+const MAX_MENTIONS_SCANNED = 64;
+const MENTION_CACHE_SIZE = 256;
+const mentionCache = new Map();
+const NAME_CHAR = /[\p{L}\p{N}\p{M}_-]/u;
+const NAME_START = /[\p{L}\p{N}\p{M}_]/u;
+
 /**
- * Whether `body` @mentions `who`, comparing names the way joins do (case, width, accents,
- * blanks, lookalikes). The name must end the mention: the next character is not an ASCII
- * letter, digit, `_` or `-`, nor a `.` followed by one, so `@ada` does not mention `ada-bot`
- * or `ada.bot`, but `thanks @ada.` does.
+ * Every folded name that `body` @mentions, worked out once per message and cached, so checking
+ * a message against many names is a set lookup (8e-1: this used to fold every candidate for
+ * every name, which let one post of @s stall the server).
+ *
+ * The rules: text in `code spans` is skipped. An @ counts only at the start of a word (not after
+ * a letter, digit, `_` or `/`, so `bob@ana` and `x.org/@ana` don't mention), and only when a
+ * name starts right after it (`@ ana` doesn't). A candidate name stops at the next @ or line
+ * break, and ends only where a name can end: the next character is not a letter, digit or
+ * mark in any script, `_` or `-`, nor a `.` followed by one. So `@ada` does not mention
+ * `ada-bot`, `ada.bot` or `adaïs`, but `thanks @ada.` does. Only the first 64 @s are read.
  */
-function mentionsName(body, who) {
-  const target = nameKey(who);
-  if (!target || typeof body !== 'string') return false;
-  const text = Array.from(body);
-  const span = Array.from(String(who)).length + 16;
-  for (let i = 0; i < text.length; i++) {
+function mentionKeys(body) {
+  if (typeof body !== 'string' || !body.includes('@')) return new Set();
+  const hit = mentionCache.get(body);
+  if (hit) return hit;
+  const keys = new Set();
+  const text = Array.from(body.replace(/`[^`\n]*`/g, ' '));
+  let scanned = 0;
+  for (let i = 0; i < text.length && scanned < MAX_MENTIONS_SCANNED; i++) {
     if (text[i] !== '@') continue;
-    for (let j = i + 2; j <= Math.min(text.length, i + 1 + span); j++) {
-      if (j < text.length && (/[\w-]/.test(text[j]) || (text[j] === '.' && /\w/.test(text[j + 1] || '')))) continue;
-      if (nameKey(text.slice(i + 1, j).join('')) === target) return true;
+    if (i > 0 && (NAME_CHAR.test(text[i - 1]) || text[i - 1] === '/' || text[i - 1] === '@')) continue;
+    if (!NAME_START.test(text[i + 1] || '')) continue;
+    scanned++;
+    const stop = Math.min(text.length, i + 1 + MENTION_SPAN);
+    for (let j = i + 2; j <= stop; j++) {
+      if (j < text.length) {
+        const c = text[j];
+        if (c === '@' || c === '\n') {
+          const k = nameKey(text.slice(i + 1, j).join(''));
+          if (k) keys.add(k);
+          break;
+        }
+        if (NAME_CHAR.test(c) || (c === '.' && NAME_CHAR.test(text[j + 1] || ''))) continue;
+      }
+      const k = nameKey(text.slice(i + 1, j).join(''));
+      if (k) keys.add(k);
     }
   }
-  return false;
+  if (mentionCache.size >= MENTION_CACHE_SIZE) mentionCache.delete(mentionCache.keys().next().value);
+  mentionCache.set(body, keys);
+  return keys;
+}
+
+/** Whether `body` @mentions `who`, comparing names the way joins do (see mentionKeys). */
+function mentionsName(body, who) {
+  const target = nameKey(who);
+  if (!target) return false;
+  return mentionKeys(body).has(target);
 }
 
 function cleanAwaiting(list, except) {
@@ -823,6 +862,8 @@ module.exports = {
   nameKey,
   sameId,
   mentionsName,
+  mentionKeys,
+  MAX_MENTIONS_SCANNED,
   awaits,
   MAX_PARTIES,
   OPEN_WELCOME_ROOM_ID,
