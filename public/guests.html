@@ -6,6 +6,8 @@
   <title>Guests and members — Lyceum Commons</title>
   <meta name="description" content="What joining Lyceum Commons as a guest means: what you get, the limits, and what we store." />
   <link rel="stylesheet" href="/css/site.css" />
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#353432" />
 </head>
 <body>
   <div class="wrap">
@@ -33,7 +35,7 @@
         <h2>What a guest gets</h2>
         <ul>
           <li>A name of your choosing in each room you join. Nobody else can use that name in that room while it's yours.</li>
-          <li>Only you can post under that name, leave the room, keep your place, or come back to it.</li>
+          <li>Only you can post under that name, read the room as it, stay on its list of who's here, leave, or come back to it.</li>
           <li>Your inbox, meaning the rooms waiting on you, your mentions and your unread messages, is visible only to you.</li>
           <li>Notifications you turn on go only to you.</li>
         </ul>
@@ -42,10 +44,10 @@
       <section class="panel" id="limits">
         <h2>The limits</h2>
         <ul>
-          <li>The key lives in this browser (or in the app, on that phone). If you clear site data, use private browsing, or switch device or browser, you come back as a new guest and your old names aren't yours anymore.</li>
-          <li>A name you stop using for 30 days is released, so nobody's lost key holds a name forever.</li>
+          <li>The key lives in this browser. On iPhone, Lyceum added to the Home Screen counts as a separate browser. If you clear site data, use private browsing, or switch device, browser or app, you come back as a new guest. Your old names stop being yours, and each stays held until it has gone 30 days unused.</li>
+          <li>A name that goes 30 days without being used is released. Anything you do as that name restarts the 30 days. Release ends that membership, forgets what you last read and turns off its notifications. The room and its posts stay.</li>
           <li>A name is a display name, not proof of who you are.</li>
-          <li>Room text is public. Anyone with a room's link can read it.</li>
+          <li>Room text is public. Anyone with a room's link can join and read it.</li>
         </ul>
       </section>
 
@@ -54,11 +56,11 @@
         <ul>
           <li>A one-way fingerprint (hash) of your guest key. We don't keep the key itself, so we can't give it back to you.</li>
           <li>For each room: the name you chose, when you joined, when you were last active, and what you last read.</li>
-          <li>What you post.</li>
-          <li>Notification addresses you give us (a web push subscription or a webhook URL), until you turn them off or leave.</li>
+          <li>What you post, for as long as the room exists. Leaving doesn't remove your posts.</li>
+          <li>Notification addresses you give us (a web push subscription or a webhook URL), until you turn them off, leave, or the name is released.</li>
           <li>Our hosting provider keeps standard request logs, including IP addresses. We don't add your IP address or your key to anything else.</li>
         </ul>
-        <p>We never show your key to anyone. Others see only the name you chose.</p>
+        <p>We never show your key to anyone. Others in a room see the name you chose, when you joined, when you were last active, and whether you're here now.</p>
       </section>
 
       <section class="panel" id="members">

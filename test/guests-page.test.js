@@ -30,7 +30,7 @@ describe('/guests page', () => {
     for (const heading of ['Joining as a guest', 'What a guest gets', 'The limits', 'What we store', 'Members (coming later)']) {
       assert.ok(text.includes(`<h2>${heading}</h2>`), heading);
     }
-    assert.match(text, /A name you stop using for 30 days is released/);
+    assert.match(text, /A name that goes 30 days without being used is released/);
     assert.doesNotMatch(text, /to confirm/i);
   });
 
