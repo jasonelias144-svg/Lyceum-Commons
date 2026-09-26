@@ -246,11 +246,12 @@ const LOOKALIKE_CAPITALS = {
 /**
  * The comparison form of a participant name: compatibility-normalized (fullwidth `ｊａｓｏｎ`
  * is `jason`), invisible characters (zero-width, bidi controls, Hangul fillers, variation
- * selectors, the blank braille cell) removed, whitespace collapsed, lowercased, Latin accents
- * and dots removed (`İLK` is `ilk`), and common lookalike letters folded. Only for comparing;
- * the display name is never changed. A name that is empty once blanks are removed is refused.
+ * selectors, the blank braille cell, control characters) removed, whitespace collapsed,
+ * lowercased, Latin accents and dots removed (`İLK` is `ilk`), and common lookalike letters
+ * folded. Only for comparing; the display name is never changed. A name that is empty once
+ * blanks are removed is refused.
  */
-const BLANK_RE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
+const BLANK_RE = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800\u{16FE4}\u{1D159}]/gu;
 
 function nameKey(id) {
   return String(id)
@@ -268,6 +269,66 @@ function nameKey(id) {
 
 function sameId(a, b) {
   return nameKey(a) === nameKey(b);
+}
+
+/** Longest name a mention can spell, in code points: 40-unit handles plus folded-away blanks. */
+const MENTION_SPAN = 56;
+/** Only the first this-many @s in a message are read as mentions (bounds the work per post). */
+const MAX_MENTIONS_SCANNED = 64;
+const MENTION_CACHE_SIZE = 256;
+const mentionCache = new Map();
+const NAME_CHAR = /[\p{L}\p{N}\p{M}_-]/u;
+const NAME_START = /[\p{L}\p{N}\p{M}_]/u;
+
+/**
+ * Every folded name that `body` @mentions, worked out once per message and cached, so checking
+ * a message against many names is a set lookup (8e-1: this used to fold every candidate for
+ * every name, which let one post of @s stall the server).
+ *
+ * The rules: text in `code spans` is skipped. An @ counts only at the start of a word (not after
+ * a letter, digit, `_` or `/`, so `bob@ana` and `x.org/@ana` don't mention), and only when a
+ * name starts right after it (`@ ana` doesn't). A candidate name stops at the next @ or line
+ * break, and ends only where a name can end: the next character is not a letter, digit or
+ * mark in any script, `_` or `-`, nor a `.` followed by one. So `@ada` does not mention
+ * `ada-bot`, `ada.bot` or `adaïs`, but `thanks @ada.` does. Only the first 64 @s are read.
+ */
+function mentionKeys(body) {
+  if (typeof body !== 'string' || !body.includes('@')) return new Set();
+  const hit = mentionCache.get(body);
+  if (hit) return hit;
+  const keys = new Set();
+  const text = Array.from(body.replace(/`[^`\n]*`/g, ' '));
+  let scanned = 0;
+  for (let i = 0; i < text.length && scanned < MAX_MENTIONS_SCANNED; i++) {
+    if (text[i] !== '@') continue;
+    if (i > 0 && (NAME_CHAR.test(text[i - 1]) || text[i - 1] === '/' || text[i - 1] === '@')) continue;
+    if (!NAME_START.test(text[i + 1] || '')) continue;
+    scanned++;
+    const stop = Math.min(text.length, i + 1 + MENTION_SPAN);
+    for (let j = i + 2; j <= stop; j++) {
+      if (j < text.length) {
+        const c = text[j];
+        if (c === '@' || c === '\n') {
+          const k = nameKey(text.slice(i + 1, j).join(''));
+          if (k) keys.add(k);
+          break;
+        }
+        if (NAME_CHAR.test(c) || (c === '.' && NAME_CHAR.test(text[j + 1] || ''))) continue;
+      }
+      const k = nameKey(text.slice(i + 1, j).join(''));
+      if (k) keys.add(k);
+    }
+  }
+  if (mentionCache.size >= MENTION_CACHE_SIZE) mentionCache.delete(mentionCache.keys().next().value);
+  mentionCache.set(body, keys);
+  return keys;
+}
+
+/** Whether `body` @mentions `who`, comparing names the way joins do (see mentionKeys). */
+function mentionsName(body, who) {
+  const target = nameKey(who);
+  if (!target) return false;
+  return mentionKeys(body).has(target);
 }
 
 function cleanAwaiting(list, except) {
@@ -476,7 +537,6 @@ function markSeen(room, party, id) {
  */
 function inbox(party, id) {
   const key = rosterKey(party, id);
-  const mentionRe = new RegExp(`@${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
   const items = [];
   for (const room of openRooms.values()) {
     sweep(room);
@@ -485,7 +545,7 @@ function inbox(party, id) {
     const idx = seenId ? room.messages.findIndex((m) => m.id === seenId) : -1;
     const unread = room.messages.slice(idx + 1).filter((m) => !(m.party === party && sameId(m.author, id)));
     const awaited = turn.state === 'input-required' && awaits(room, turn.awaiting, party, id);
-    const mentions = unread.filter((m) => mentionRe.test(m.body)).length;
+    const mentions = unread.filter((m) => mentionsName(m.body, id)).length;
     const member = isMember(room, party, id);
     if (!awaited && !mentions && !(member && unread.length)) continue;
     const last = room.messages[room.messages.length - 1];
@@ -621,11 +681,11 @@ function assertIdFree(room, party, id) {
 }
 
 /**
- * Zero-width spaces, bidi controls and other invisible marks make a handle look like another
- * one (or display reversed). Joiners (U+200C, U+200D) stay allowed: scripts and emoji need them.
- * AI ids are ASCII-only already.
+ * Zero-width spaces, bidi controls, control characters and other invisible marks make a handle
+ * look like another one (or display reversed). Joiners (U+200C, U+200D) stay allowed: scripts
+ * and emoji need them. AI ids are ASCII-only already.
  */
-const INVISIBLE_RE = /[\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
+const INVISIBLE_RE = /[\p{Cc}\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
 
 function sameSecret(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
@@ -801,6 +861,9 @@ console.log(describePresenceTtl());
 module.exports = {
   nameKey,
   sameId,
+  mentionsName,
+  mentionKeys,
+  MAX_MENTIONS_SCANNED,
   awaits,
   MAX_PARTIES,
   OPEN_WELCOME_ROOM_ID,
