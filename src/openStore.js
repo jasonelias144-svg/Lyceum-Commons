@@ -246,11 +246,12 @@ const LOOKALIKE_CAPITALS = {
 /**
  * The comparison form of a participant name: compatibility-normalized (fullwidth `ｊａｓｏｎ`
  * is `jason`), invisible characters (zero-width, bidi controls, Hangul fillers, variation
- * selectors, the blank braille cell) removed, whitespace collapsed, lowercased, Latin accents
- * and dots removed (`İLK` is `ilk`), and common lookalike letters folded. Only for comparing;
- * the display name is never changed. A name that is empty once blanks are removed is refused.
+ * selectors, the blank braille cell, control characters) removed, whitespace collapsed,
+ * lowercased, Latin accents and dots removed (`İLK` is `ilk`), and common lookalike letters
+ * folded. Only for comparing; the display name is never changed. A name that is empty once
+ * blanks are removed is refused.
  */
-const BLANK_RE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
+const BLANK_RE = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800\u{16FE4}\u{1D159}]/gu;
 
 function nameKey(id) {
   return String(id)
@@ -268,6 +269,27 @@ function nameKey(id) {
 
 function sameId(a, b) {
   return nameKey(a) === nameKey(b);
+}
+
+/**
+ * Whether `body` @mentions `who`, comparing names the way joins do (case, width, accents,
+ * blanks, lookalikes). The name must end the mention: the next character is not an ASCII
+ * letter, digit, `_` or `-`, nor a `.` followed by one, so `@ada` does not mention `ada-bot`
+ * or `ada.bot`, but `thanks @ada.` does.
+ */
+function mentionsName(body, who) {
+  const target = nameKey(who);
+  if (!target || typeof body !== 'string') return false;
+  const text = Array.from(body);
+  const span = Array.from(String(who)).length + 16;
+  for (let i = 0; i < text.length; i++) {
+    if (text[i] !== '@') continue;
+    for (let j = i + 2; j <= Math.min(text.length, i + 1 + span); j++) {
+      if (j < text.length && (/[\w-]/.test(text[j]) || (text[j] === '.' && /\w/.test(text[j + 1] || '')))) continue;
+      if (nameKey(text.slice(i + 1, j).join('')) === target) return true;
+    }
+  }
+  return false;
 }
 
 function cleanAwaiting(list, except) {
@@ -476,7 +498,6 @@ function markSeen(room, party, id) {
  */
 function inbox(party, id) {
   const key = rosterKey(party, id);
-  const mentionRe = new RegExp(`@${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
   const items = [];
   for (const room of openRooms.values()) {
     sweep(room);
@@ -485,7 +506,7 @@ function inbox(party, id) {
     const idx = seenId ? room.messages.findIndex((m) => m.id === seenId) : -1;
     const unread = room.messages.slice(idx + 1).filter((m) => !(m.party === party && sameId(m.author, id)));
     const awaited = turn.state === 'input-required' && awaits(room, turn.awaiting, party, id);
-    const mentions = unread.filter((m) => mentionRe.test(m.body)).length;
+    const mentions = unread.filter((m) => mentionsName(m.body, id)).length;
     const member = isMember(room, party, id);
     if (!awaited && !mentions && !(member && unread.length)) continue;
     const last = room.messages[room.messages.length - 1];
@@ -621,11 +642,11 @@ function assertIdFree(room, party, id) {
 }
 
 /**
- * Zero-width spaces, bidi controls and other invisible marks make a handle look like another
- * one (or display reversed). Joiners (U+200C, U+200D) stay allowed: scripts and emoji need them.
- * AI ids are ASCII-only already.
+ * Zero-width spaces, bidi controls, control characters and other invisible marks make a handle
+ * look like another one (or display reversed). Joiners (U+200C, U+200D) stay allowed: scripts
+ * and emoji need them. AI ids are ASCII-only already.
  */
-const INVISIBLE_RE = /[\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
+const INVISIBLE_RE = /[\p{Cc}\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
 
 function sameSecret(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
@@ -801,6 +822,7 @@ console.log(describePresenceTtl());
 module.exports = {
   nameKey,
   sameId,
+  mentionsName,
   awaits,
   MAX_PARTIES,
   OPEN_WELCOME_ROOM_ID,
