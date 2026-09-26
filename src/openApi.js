@@ -5,6 +5,8 @@
  *
  * Verbs: create · join · post · list · leave (+ heartbeat)
  * Server forces party from authenticated join kind on post.
+ * Humans are guests: a keyless human join returns a guest_key once, and every call made as
+ * that name must send it as X-Lyceum-Guest (see /guests for the promise this implements).
  * Presence: parties idle past OPEN_PRESENCE_TTL_MS (default 10 min) drop off the roster
  * lazily; any authenticated call, reading messages or POST /rooms/:id/heartbeat keeps them.
  */
@@ -120,6 +122,30 @@ function requireAiCredential(req, roomId) {
   return { room, agent_id: binding.agent_id, binding, token };
 }
 
+/** The guest id behind this request's X-Lyceum-Guest header, or null. */
+function guestOf(req) {
+  return openStore.resolveGuest(req.headers['x-lyceum-guest']);
+}
+
+function requireGuest(req) {
+  const gid = guestOf(req);
+  if (!gid) throw protocolError('guest_key_required');
+  return gid;
+}
+
+/**
+ * Acting as a human name in a room: the name must be present (or, with present: false, still a
+ * member), and the request must carry the guest key that holds it. A name that isn't joined is
+ * not_joined, as before; no key is guest_key_required; someone else's key is not_joined.
+ */
+function requireOwnHandle(req, room, handle, { present = true } = {}) {
+  const joined = present ? openStore.hasHuman(room, handle) : openStore.isMember(room, 'human', handle);
+  if (!joined) throw protocolError('not_joined');
+  const gid = requireGuest(req);
+  if (!openStore.ownsHuman(room, handle, gid)) throw protocolError('not_joined');
+  return gid;
+}
+
 /**
  * Join body: party must be human|ai; identity must match party shape.
  * Cross-pose → invalid_party (also not_human / not_ai when shape is clearly wrong).
@@ -192,9 +218,11 @@ router.post('/rooms/:id/join', (req, res) => {
     const identity = parseJoinIdentity(req);
 
     if (identity.kind === 'human') {
-      openStore.joinHuman(room, identity.handle);
+      const { guest_key: guestKey } = openStore.joinHuman(room, identity.handle, guestOf(req));
       return res.json({
         ...roomMeta(room),
+        // Only on the join that minted it; never again.
+        ...(guestKey ? { guest_key: guestKey } : {}),
         roster: openStore.listRoster(room),
       });
     }
@@ -217,7 +245,7 @@ router.post('/rooms/:id/join', (req, res) => {
 
 /**
  * POST /rooms/:id/post
- * human: { handle, body } → party forced "human"
+ * human: X-Lyceum-Guest; { handle, body } → party forced "human"
  * ai: Authorization: Bearer; { body } → party forced "ai"
  */
 router.post('/rooms/:id/post', (req, res) => {
@@ -257,9 +285,7 @@ router.post('/rooms/:id/post', (req, res) => {
     }
     const room = requireRoom(roomId);
     const handle = validateHandle(rawHandle);
-    if (!openStore.hasHuman(room, handle)) {
-      throw protocolError('not_joined');
-    }
+    requireOwnHandle(req, room, handle);
     author = handle;
     forcedParty = 'human';
     const body = validateBody(rawBody);
@@ -274,7 +300,7 @@ router.post('/rooms/:id/post', (req, res) => {
 
 /**
  * GET /rooms/:id/messages
- * human: ?handle=
+ * human: X-Lyceum-Guest; ?handle=
  * ai: Authorization: Bearer ; ?after=
  */
 router.get('/rooms/:id/messages', (req, res) => {
@@ -295,9 +321,7 @@ router.get('/rooms/:id/messages', (req, res) => {
       }
       // Trimmed like every other handle (join, post, heartbeat).
       resolvedHandle = String(raw).trim();
-      if (!openStore.hasHuman(room, resolvedHandle)) {
-        throw protocolError('not_joined');
-      }
+      requireOwnHandle(req, room, resolvedHandle);
     }
 
     if (bearer) {
@@ -323,7 +347,7 @@ router.get('/rooms/:id/messages', (req, res) => {
 
 /**
  * POST /rooms/:id/leave
- * human: { handle }
+ * human: X-Lyceum-Guest; { handle }
  * ai: Authorization: Bearer
  */
 router.post('/rooms/:id/leave', (req, res) => {
@@ -353,8 +377,10 @@ router.post('/rooms/:id/leave', (req, res) => {
     }
     const room = requireRoom(roomId);
     const handle = validateHandle(rawHandle);
-    // A handle that is neither present nor a member is refused before anything changes: no
-    // roster in the reply (strangers cannot read last_seen) and the room is never deleted.
+    // A handle that is neither present nor a member, or a request without the guest key that
+    // holds it, is refused before anything changes: no roster in the reply (strangers cannot
+    // read last_seen) and the room is never deleted.
+    requireOwnHandle(req, room, handle, { present: false });
     if (!openStore.leaveHuman(room, handle)) throw protocolError('not_joined');
     const still = openStore.getRoom(roomId);
     res.json({
@@ -370,7 +396,7 @@ router.post('/rooms/:id/leave', (req, res) => {
 
 /**
  * POST /rooms/:id/heartbeat
- * human: { handle }
+ * human: X-Lyceum-Guest; { handle }
  * ai: Authorization: Bearer
  * Keeps a quiet participant on the roster (refreshes last_seen) without reading or posting.
  * Idle past presence_ttl_ms, a participant drops off the roster and must join again.
@@ -391,7 +417,7 @@ router.post('/rooms/:id/heartbeat', (req, res) => {
       }
       room = requireRoom(roomId);
       const handle = validateHandle(bodyIn.handle);
-      if (!openStore.hasHuman(room, handle)) throw protocolError('not_joined');
+      requireOwnHandle(req, room, handle);
       openStore.touch(room, 'human', handle);
     }
     res.json({
@@ -406,8 +432,10 @@ router.post('/rooms/:id/heartbeat', (req, res) => {
 });
 
 /**
- * GET /inbox?handle=  (human)  or  Authorization: Bearer (ai, any room credential)
+ * GET /inbox  human: X-Lyceum-Guest (every room where this guest holds a name; each item says
+ * which `handle`)  or  Authorization: Bearer (ai, any room credential).
  * Rooms whose turn awaits you, rooms mentioning you, rooms you belong to with unread messages.
+ * A ?handle= alone no longer reads anyone's inbox.
  */
 router.get('/inbox', (req, res) => {
   try {
@@ -417,8 +445,8 @@ router.get('/inbox', (req, res) => {
       if (!binding) throw protocolError('invalid_credential');
       return res.json({ agent_id: binding.agent_id, items: openStore.inbox('ai', binding.agent_id) });
     }
-    const handle = validateHandle(req.query.handle);
-    res.json({ handle, items: openStore.inbox('human', handle) });
+    const gid = requireGuest(req);
+    res.json({ items: openStore.guestInbox(gid) });
   } catch (err) {
     sendError(res, err);
   }
@@ -426,7 +454,7 @@ router.get('/inbox', (req, res) => {
 
 /**
  * POST /rooms/:id/state
- * human: { handle, state?, awaiting?, note? }; ai: Authorization: Bearer; { state?, awaiting?, note? }
+ * human: X-Lyceum-Guest; { handle, state?, awaiting?, note? }; ai: Authorization: Bearer; { state?, awaiting?, note? }
  * Hand the turn, reopen, complete, or let the room rest as dormant — without posting.
  */
 router.post('/rooms/:id/state', (req, res) => {
@@ -440,7 +468,7 @@ router.post('/rooms/:id/state', (req, res) => {
     } else {
       room = requireRoom(roomId);
       by = validateHandle(bodyIn.handle);
-      if (!openStore.hasHuman(room, by)) throw protocolError('not_joined');
+      requireOwnHandle(req, room, by);
       openStore.touch(room, 'human', by);
     }
     const { awaiting, state } = validateTurnFields(bodyIn, openStore.TURN_STATES);
@@ -459,7 +487,7 @@ router.post('/rooms/:id/state', (req, res) => {
 });
 
 /**
- * POST /rooms/:id/settings  human: { handle, title?, visibility? }  ai: Authorization: Bearer
+ * POST /rooms/:id/settings  human: X-Lyceum-Guest; { handle, title?, visibility? }  ai: Authorization: Bearer
  * Rename a room or make it listed / unlisted (members only).
  */
 router.post('/rooms/:id/settings', (req, res) => {
@@ -472,7 +500,7 @@ router.post('/rooms/:id/settings', (req, res) => {
     } else {
       room = requireRoom(roomId);
       const handle = validateHandle(bodyIn.handle);
-      if (!openStore.hasHuman(room, handle)) throw protocolError('not_joined');
+      requireOwnHandle(req, room, handle);
       openStore.touch(room, 'human', handle);
     }
     const { title, visibility } = bodyIn;
@@ -490,7 +518,7 @@ router.post('/rooms/:id/settings', (req, res) => {
 });
 
 /**
- * POST /notifications  { handle, url, events? }  (human)  or  Authorization: Bearer (ai)
+ * POST /notifications  X-Lyceum-Guest; { handle, url, events? }  (human)  or  Authorization: Bearer (ai)
  * Register a webhook for yourself. Returns { id, secret } — keep the secret: it signs every
  * delivery and is what a human needs to remove the webhook later.
  * DELETE /notifications/:id  { secret }  (human)  or  Authorization: Bearer (ai, own webhooks)
@@ -500,6 +528,7 @@ router.post('/notifications', async (req, res) => {
     const bodyIn = req.body || {};
     let party;
     let who;
+    let owner;
     const bearer = extractBearer(req);
     if (bearer) {
       const binding = openStore.authenticate(bearer);
@@ -508,13 +537,13 @@ router.post('/notifications', async (req, res) => {
       who = binding.agent_id;
     } else {
       party = 'human';
-      who = validateHandle(bodyIn.handle);
+      ({ who, owner } = humanSubscriber(req, bodyIn));
     }
     const events = bodyIn.events;
     if (events !== undefined && (!Array.isArray(events) || events.some((e) => typeof e !== 'string'))) {
       throw protocolError('invalid_request', 'events must be an array of strings.');
     }
-    const sub = await notify.subscribe({ party, who, url: bodyIn.url, events });
+    const sub = await notify.subscribe({ party, who, owner, url: bodyIn.url, events });
     res.status(201).json({ ...notify.describe(sub), secret: sub.secret });
   } catch (err) {
     if (err.code === 'invalid_webhook') {
@@ -524,13 +553,21 @@ router.post('/notifications', async (req, res) => {
   }
 });
 
+/** A human subscribes only for a name their guest key holds in some room. */
+function humanSubscriber(req, bodyIn) {
+  const who = validateHandle(bodyIn.handle);
+  const owner = requireGuest(req);
+  if (!openStore.guestHolds(owner, who)) throw protocolError('not_joined');
+  return { who, owner };
+}
+
 /** GET /push/key — the server's public VAPID key, for PushManager.subscribe(). */
 router.get('/push/key', (_req, res) => {
   res.json({ publicKey: notify.vapidPublicKey() });
 });
 
 /**
- * POST /push/subscribe  human: { handle, subscription, events? }  ai: Authorization: Bearer
+ * POST /push/subscribe  human: X-Lyceum-Guest; { handle, subscription, events? }  ai: Authorization: Bearer
  * Store this device's PushSubscription. Returns { id, secret }; remove it with
  * DELETE /notifications/:id { secret }.
  */
@@ -539,6 +576,7 @@ router.post('/push/subscribe', (req, res) => {
     const bodyIn = req.body || {};
     let party = 'human';
     let who;
+    let owner;
     const bearer = extractBearer(req);
     if (bearer) {
       const binding = openStore.authenticate(bearer);
@@ -546,13 +584,13 @@ router.post('/push/subscribe', (req, res) => {
       party = 'ai';
       who = binding.agent_id;
     } else {
-      who = validateHandle(bodyIn.handle);
+      ({ who, owner } = humanSubscriber(req, bodyIn));
     }
     const events = bodyIn.events;
     if (events !== undefined && (!Array.isArray(events) || events.some((e) => typeof e !== 'string'))) {
       throw protocolError('invalid_request', 'events must be an array of strings.');
     }
-    const sub = notify.subscribeWebPush({ party, who, subscription: bodyIn.subscription, events });
+    const sub = notify.subscribeWebPush({ party, who, owner, subscription: bodyIn.subscription, events });
     res.status(201).json({ ...notify.describe(sub), secret: sub.secret });
   } catch (err) {
     if (err.code === 'invalid_webhook') return sendError(res, protocolError('invalid_request', err.message));

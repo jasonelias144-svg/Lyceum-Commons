@@ -5,6 +5,7 @@
  */
 const { describe, it, after } = require('node:test');
 const assert = require('node:assert/strict');
+const { guestHeaders, remember } = require('./guest-jar');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
@@ -56,10 +57,12 @@ function stop(child) {
 async function send(base, method, p, body, headers = {}) {
   const res = await fetch(`${base}${p}`, {
     method,
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', ...guestHeaders(p, body, headers), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  return { status: res.status, data: await res.json() };
+  const data = await res.json();
+  remember(p, body, data);
+  return { status: res.status, data };
 }
 
 describe('snapshot persistence', () => {
