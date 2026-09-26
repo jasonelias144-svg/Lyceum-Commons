@@ -6,6 +6,7 @@
  */
 const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
+const { guestHeaders, remember } = require('./guest-jar');
 const http = require('http');
 const crypto = require('crypto');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
@@ -78,10 +79,12 @@ beforeEach(() => {
 async function json(method, path, body, headers = {}) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', ...guestHeaders(path, body, headers), ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  return { status: res.status, data: await res.json().catch(() => null) };
+  const data = await res.json().catch(() => null);
+  remember(path, body, data);
+  return { status: res.status, data };
 }
 
 async function mcp() {
@@ -160,6 +163,7 @@ describe('webhooks', () => {
   });
 
   it('refuses http, private hosts and unknown events when private delivery is not allowed', async () => {
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
     process.env.LYCEUM_WEBHOOK_ALLOW_PRIVATE = '0';
     try {
       for (const url of ['http://example.com/x', 'https://127.0.0.1/x', 'https://localhost/x', 'https://[::1]/x', 'https://10.1.2.3/x']) {
@@ -244,6 +248,7 @@ describe('web push', () => {
     assert.equal(key.status, 200);
     assert.match(key.data.publicKey, /^[A-Za-z0-9_-]{80,}$/);
 
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
     const bad = await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: sub('https://evil.example/x') });
     assert.equal(bad.status, 400);
     const missing = await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: { endpoint: 'https://web.push.apple.com/x' } });
@@ -279,6 +284,7 @@ describe('web push', () => {
       err.statusCode = 410;
       throw err;
     });
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
     await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: sub('https://fcm.googleapis.com/fcm/send/abc') });
     assert.equal(notify.list('human', 'jason').length, 1);
     await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'ana', party: 'human' });
