@@ -11,6 +11,8 @@
  * presence TTL (OPEN_PRESENCE_TTL_MS, default 10 minutes, 0 turns expiry off) are
  * expired lazily whenever the room is read or changed; there are no timers.
  * Membership (room.members) is separate from presence: expiry keeps it, leave ends it.
+ * Human memberships belong to a guest key (see "Guest keys" below); 30 days without any
+ * activity releases one.
  */
 const crypto = require('crypto');
 const { protocolError } = require('./errors');
@@ -93,6 +95,71 @@ const openRooms = new Map();
 const credentials = new Map();
 /** Each participant's most recent room ("party:id" → room id), the default for address lines. */
 const lastRooms = new Map();
+
+/**
+ * Guest keys. A human join without a key gets a fresh random key, returned once in the join
+ * response and never again. The client sends it as X-Lyceum-Guest; only its sha256 is kept,
+ * mapped to a guest record. `type` leaves room for other kinds of record later, and
+ * `account_id` is where a member account will attach. `gid` is internal and not secret.
+ */
+const guests = new Map();
+const GUEST_KEY_RE = /^g_[A-Za-z0-9_-]{43}$/;
+const DEFAULT_GUEST_RELEASE_MS = 30 * 24 * 60 * 60 * 1000;
+const MIN_GUEST_RELEASE_MS = 60 * 1000;
+const releaseCache = { raw: undefined, value: DEFAULT_GUEST_RELEASE_MS };
+
+/**
+ * How long a human name may go unused before it is released: OPEN_GUEST_RELEASE_MS, default
+ * 30 days (the /guests promise). Shorter values are for testing; whole numbers of at least
+ * 60000 only, anything else falls back to the default with a warning.
+ */
+function guestReleaseMs() {
+  const raw = process.env.OPEN_GUEST_RELEASE_MS;
+  if (raw === releaseCache.raw) return releaseCache.value;
+  let value = DEFAULT_GUEST_RELEASE_MS;
+  if (raw !== undefined && raw !== '') {
+    if (/^\d+$/.test(raw) && Number(raw) >= MIN_GUEST_RELEASE_MS) value = Number(raw);
+    else console.warn(`OPEN_GUEST_RELEASE_MS="${raw}" is not a whole number of at least ${MIN_GUEST_RELEASE_MS}; using ${DEFAULT_GUEST_RELEASE_MS}.`);
+  }
+  releaseCache.raw = raw;
+  releaseCache.value = value;
+  return value;
+}
+
+function hashGuestKey(key) {
+  return crypto.createHash('sha256').update(key).digest('hex');
+}
+
+function mintGuest() {
+  const key = `g_${crypto.randomBytes(32).toString('base64url')}`;
+  const record = { gid: newId('gst'), type: 'guest', created_at: nowIso(), account_id: null };
+  guests.set(hashGuestKey(key), record);
+  return { key, gid: record.gid };
+}
+
+/** The guest id for a key, or null for a missing, malformed or unknown key. */
+function resolveGuest(key) {
+  if (typeof key !== 'string' || !GUEST_KEY_RE.test(key)) return null;
+  const record = guests.get(hashGuestKey(key));
+  return record ? record.gid : null;
+}
+
+/** Listeners for { type: 'claim' | 'release', owner, handle } (notify keeps subscriptions in step). */
+const guestListeners = [];
+
+function onGuestEvent(fn) {
+  guestListeners.push(fn);
+}
+
+function emitGuestEvent(event) {
+  for (const fn of guestListeners) {
+    try {
+      fn(event);
+    } catch (err) {
+      console.error('Guest listener failed:', err);
+    }
+  }
+}
 
 function lastRoomOf(party, id) {
   return lastRooms.get(rosterKey(party, id)) || null;
@@ -183,7 +250,9 @@ function updateRoom(room, { title, visibility }) {
  * Membership is tracked apart from presence (the roster). Joining makes you a member;
  * only an explicit leave ends it. Expiry takes you off the roster (you must join again
  * to post) but keeps your membership, so `message` notifications and inbox unread keep
- * reaching you while you are away. Stored as { "party:id": true } so it snapshots as JSON.
+ * reaching you while you are away. Stored as { "party:id": record } so it snapshots as JSON:
+ * AI records are `true`; human records are { owner, last_active }, where owner is the guest id
+ * that holds the name (null for a membership from before guest keys, until a rejoin claims it).
  */
 function membersOf(room) {
   if (!room.members || typeof room.members !== 'object') {
@@ -191,7 +260,34 @@ function membersOf(room) {
     room.members = {};
     for (const key of room.roster.keys()) room.members[key] = true;
   }
+  for (const key of Object.keys(room.members)) {
+    if (room.members[key] === true && key.startsWith('human:')) {
+      // From before guest keys: no owner yet, and the release clock starts at this boot.
+      room.members[key] = { owner: null, last_active: new Date(presenceEpoch).toISOString() };
+    }
+  }
   return room.members;
+}
+
+/** True when this guest holds the human name in this room. */
+function ownsHuman(room, handle, gid) {
+  if (!gid) return false;
+  const rec = membersOf(room)[rosterKey('human', handle)];
+  return Boolean(rec && rec.owner === gid);
+}
+
+/** True when this owner (a guest id, or null for unclaimed) holds the exact human name in this room. */
+function holdsIn(room, owner, handle) {
+  const rec = membersOf(room)[rosterKey('human', handle)];
+  return Boolean(rec) && (rec.owner || null) === (owner || null);
+}
+
+/** True when this owner holds the exact human name in any room. */
+function guestHolds(owner, handle) {
+  for (const room of openRooms.values()) {
+    if (holdsIn(room, owner, handle)) return true;
+  }
+  return false;
 }
 
 function isMember(room, party, id) {
@@ -535,34 +631,63 @@ function markSeen(room, party, id) {
  * What is waiting for a participant across all rooms: rooms whose turn awaits
  * them, and rooms they belong to (or are mentioned in) with unread messages.
  */
-function inbox(party, id) {
+function inboxItem(room, party, id) {
   const key = rosterKey(party, id);
+  const turn = turnOf(room);
+  const seenId = room.seen[key];
+  const idx = seenId ? room.messages.findIndex((m) => m.id === seenId) : -1;
+  const unread = room.messages.slice(idx + 1).filter((m) => !(m.party === party && sameId(m.author, id)));
+  const awaited = turn.state === 'input-required' && awaits(room, turn.awaiting, party, id);
+  const mentions = unread.filter((m) => mentionsName(m.body, id)).length;
+  const member = isMember(room, party, id);
+  if (!awaited && !mentions && !(member && unread.length)) return null;
+  const last = room.messages[room.messages.length - 1];
+  return {
+    room_id: room.id,
+    title: room.title,
+    state: turn.state,
+    awaiting: turn.awaiting.slice(),
+    your_turn: awaited,
+    unread: unread.length,
+    mentions,
+    first_unread: unread.length ? unread[0].id : null,
+    last_activity: last ? last.created_at : room.created_at,
+  };
+}
+
+function sortInbox(items) {
+  items.sort((a, b) => Number(b.your_turn) - Number(a.your_turn) || b.last_activity.localeCompare(a.last_activity));
+  return items;
+}
+
+function inbox(party, id) {
   const items = [];
   for (const room of openRooms.values()) {
     sweep(room);
-    const turn = turnOf(room);
-    const seenId = room.seen[key];
-    const idx = seenId ? room.messages.findIndex((m) => m.id === seenId) : -1;
-    const unread = room.messages.slice(idx + 1).filter((m) => !(m.party === party && sameId(m.author, id)));
-    const awaited = turn.state === 'input-required' && awaits(room, turn.awaiting, party, id);
-    const mentions = unread.filter((m) => mentionsName(m.body, id)).length;
-    const member = isMember(room, party, id);
-    if (!awaited && !mentions && !(member && unread.length)) continue;
-    const last = room.messages[room.messages.length - 1];
-    items.push({
-      room_id: room.id,
-      title: room.title,
-      state: turn.state,
-      awaiting: turn.awaiting.slice(),
-      your_turn: awaited,
-      unread: unread.length,
-      mentions,
-      first_unread: unread.length ? unread[0].id : null,
-      last_activity: last ? last.created_at : room.created_at,
-    });
+    const item = inboxItem(room, party, id);
+    if (item) items.push(item);
   }
-  items.sort((a, b) => Number(b.your_turn) - Number(a.your_turn) || b.last_activity.localeCompare(a.last_activity));
-  return items;
+  return sortInbox(items);
+}
+
+/**
+ * A guest's inbox: every room where this guest holds a human name, each item carrying the
+ * name (`handle`) it is for. Rooms where someone else of the same name is mentioned or awaited
+ * are not this guest's business and are left out.
+ */
+function guestInbox(gid) {
+  const items = [];
+  if (!gid) return items;
+  for (const room of openRooms.values()) {
+    sweep(room);
+    for (const [key, rec] of Object.entries(membersOf(room))) {
+      if (!key.startsWith('human:') || !rec || rec.owner !== gid) continue;
+      const handle = key.slice('human:'.length);
+      const item = inboxItem(room, 'human', handle);
+      if (item) items.push({ ...item, handle });
+    }
+  }
+  return sortInbox(items);
 }
 
 /** Look up a room; expires idle parties and prunes the turn before anyone sees it. */
@@ -583,8 +708,12 @@ function listRoster(room) {
 
 /** Record activity by a participant (no-op if they are not on the roster). */
 function touch(room, party, id) {
-  const entry = room.roster.get(rosterKey(party, id));
-  if (entry) entry.last_seen = nowIso();
+  const key = rosterKey(party, id);
+  const entry = room.roster.get(key);
+  const at = nowIso();
+  if (entry) entry.last_seen = at;
+  const rec = party === 'human' ? membersOf(room)[key] : null;
+  if (rec && typeof rec === 'object') rec.last_active = at;
   return Boolean(entry);
 }
 
@@ -625,9 +754,33 @@ function restartGrace(room, id, at) {
   since[k] = Math.max(since[k], at);
 }
 
-/** Lazy housekeeping on every read or change: expire idle parties, then prune the turn. */
+/**
+ * Release human memberships with no activity for guestReleaseMs() (30 days): the name is free
+ * again, what they last read is forgotten, and notify drops that name's subscriptions. Only
+ * names nobody is present under; like expiry, this never deletes a room.
+ */
+function releaseIdle(room) {
+  const members = membersOf(room);
+  const t = now();
+  const released = [];
+  for (const [key, rec] of Object.entries(members)) {
+    if (!key.startsWith('human:') || !rec || typeof rec !== 'object' || room.roster.has(key)) continue;
+    if (t - (Date.parse(rec.last_active) || 0) <= guestReleaseMs()) continue;
+    delete members[key];
+    if (room.seen) delete room.seen[key];
+    released.push({ owner: rec.owner || null, handle: key.slice('human:'.length) });
+  }
+  if (released.length) {
+    dirty = true;
+    for (const r of released) emitGuestEvent({ type: 'release', ...r });
+  }
+  return released;
+}
+
+/** Lazy housekeeping on every read or change: expire idle parties, release idle names, prune the turn. */
 function sweep(room) {
   const expired = expireIdle(room);
+  releaseIdle(room);
   pruneAwaiting(room);
   return expired;
 }
@@ -646,9 +799,11 @@ function identityError(code, detail) {
  *
  * - In your own party, a name is held by anyone present or kept as a member (timed out but
  *   not left): a variant of it gets `handle_taken`.
- * - Across parties, a name is held only while its owner is present. Someone who joined once
- *   and walked away does not block the other party forever. The exact name held by a present
- *   participant of the other party is `invalid_party`; a variant is `handle_taken`.
+ * - Across parties, a name is held while its owner is present. A guest's name also holds
+ *   against AIs while the guest keeps it (until they leave or it is released after 30 idle
+ *   days), so "nobody else can use that name" holds while it's theirs. An AI or an unclaimed
+ *   pre-guest membership that walked away does not block the other party. The exact name held
+ *   by the other party is `invalid_party`; a variant is `handle_taken`.
  * - Rejoining as yourself (same party, same spelling) passes if you are present. A kept member
  *   rejoining passes unless the other party is using the name right now. Duplicates restored
  *   from older snapshots keep rejoining under their own spelling.
@@ -662,7 +817,11 @@ function assertIdFree(room, party, id) {
   const kept = Boolean(members[key]);
   const wanted = nameKey(id);
   const ownParty = `${party}:`;
-  const held = new Set([...room.roster.keys(), ...Object.keys(members).filter((k) => k.startsWith(ownParty))]);
+  const guestHeld = (k) => k.startsWith('human:') && members[k] && members[k].owner;
+  const held = new Set([
+    ...room.roster.keys(),
+    ...Object.keys(members).filter((k) => k.startsWith(ownParty) || (party === 'ai' && guestHeld(k))),
+  ]);
   for (const k of held) {
     if (k === key) continue;
     const i = k.indexOf(':');
@@ -674,6 +833,7 @@ function assertIdFree(room, party, id) {
       throw identityError('handle_taken', 'That name, or one that looks the same, is already taken in this room.');
     }
     if (otherId === id) {
+      if (!room.roster.has(k)) throw identityError('invalid_party', 'That name is held in this room by a human.');
       throw identityError('invalid_party', `That name is in use in this room right now by ${otherParty === 'ai' ? 'an AI' : 'a human'}.`);
     }
     throw identityError('handle_taken', 'That name, or one that looks the same, is in use in this room right now.');
@@ -701,30 +861,40 @@ function assertCapacity(room) {
 }
 
 /**
- * Join (or re-join) a human. Returns { room, created }.
+ * Join (or re-join) a human as guest `gid` (null when the request had no valid guest key).
+ * Returns { room, created, guest_key }; guest_key is set only when this join minted one.
+ *
+ * A held name answers only to the guest that owns it: anyone else, with or without a key, gets
+ * the same generic handle_taken a lookalike gets. A membership from before guest keys (no
+ * owner) is claimed by the first rejoin; a keyless rejoin mints a key and claims it in one step.
+ * A key is minted only after every check has passed, so a refused join hands out nothing.
  */
-function joinHuman(room, handle) {
+function joinHuman(room, handle, gid = null) {
   const key = rosterKey('human', handle);
   // New names only: a handle joined before these rules (e.g. restored from a snapshot) can still re-join.
   if (!isMember(room, 'human', handle) && (INVISIBLE_RE.test(handle) || !nameKey(handle))) {
     throw protocolError('invalid_handle');
   }
-  assertIdFree(room, 'human', handle);
-  if (room.roster.has(key)) {
-    touch(room, 'human', handle);
-    membersOf(room)[key] = true;
-    return { room, created: false };
+  const members = membersOf(room);
+  const rec = members[key] && typeof members[key] === 'object' ? members[key] : null;
+  if (rec && rec.owner && rec.owner !== gid) {
+    throw identityError('handle_taken', 'That name, or one that looks the same, is already taken in this room.');
   }
-  assertCapacity(room);
+  assertIdFree(room, 'human', handle);
+  const present = room.roster.has(key);
+  if (!present) assertCapacity(room);
+  let guestKey = null;
+  if (!gid) ({ key: guestKey, gid } = mintGuest());
   const at = nowIso();
-  room.roster.set(key, {
-    id: handle,
-    party: 'human',
-    joined_at: at,
-    last_seen: at,
-  });
-  membersOf(room)[key] = true;
-  return { room, created: true };
+  const claimed = !rec || !rec.owner;
+  members[key] = { owner: gid, last_active: at };
+  if (present) {
+    touch(room, 'human', handle);
+  } else {
+    room.roster.set(key, { id: handle, party: 'human', joined_at: at, last_seen: at });
+  }
+  if (rec && claimed) emitGuestEvent({ type: 'claim', owner: gid, handle });
+  return { room, created: !present, guest_key: guestKey };
 }
 
 /**
@@ -826,9 +996,11 @@ function leaveParty(room, party, id) {
   const members = membersOf(room);
   const key = rosterKey(party, id);
   if (!room.roster.has(key) && !members[key]) return false;
+  const rec = members[key];
   delete members[key];
   if (!removeParty(room, party, id)) dropAwaiting(room, id); // an expired member leaving
   maybeGc(room);
+  if (party === 'human') emitGuestEvent({ type: 'release', owner: (rec && rec.owner) || null, handle: id });
   return true;
 }
 
@@ -851,6 +1023,7 @@ function maybeGc(room) {
 function clearAll() {
   openRooms.clear();
   credentials.clear();
+  guests.clear();
   presenceEpoch = now();
   ensureWelcomeLobby();
 }
@@ -874,6 +1047,14 @@ module.exports = {
   describePresenceTtl,
   takeDirty,
   isMember,
+  DEFAULT_GUEST_RELEASE_MS,
+  guestReleaseMs,
+  resolveGuest,
+  ownsHuman,
+  holdsIn,
+  guestHolds,
+  guestInbox,
+  onGuestEvent,
   createRoom,
   listRooms,
   updateRoom,
@@ -903,4 +1084,5 @@ module.exports = {
   _setClock,
   _openRooms: openRooms,
   _credentials: credentials,
+  _guests: guests,
 };
