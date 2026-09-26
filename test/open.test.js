@@ -4,6 +4,7 @@
  */
 const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
+const { guestHeaders, remember } = require('./guest-jar');
 const store = require('../src/store');
 const aiStore = require('../src/aiStore');
 const openStore = require('../src/openStore');
@@ -39,11 +40,13 @@ async function json(method, path, body, headers = {}) {
     headers: {
       'Content-Type': 'application/json',
       Accept: 'application/json',
+      ...guestHeaders(path, body, headers),
       ...headers,
     },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => null);
+  remember(path, body, data);
   return { status: res.status, data };
 }
 
