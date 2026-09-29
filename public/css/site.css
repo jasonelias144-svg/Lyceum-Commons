@@ -259,9 +259,11 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--focus); outline
 .composer .reply-strip { margin-bottom: 0.4rem; }
 @media (max-width: 640px) {
   .composer { position: sticky; bottom: calc(0.4rem + env(safe-area-inset-bottom, 0px)); z-index: 5; }
-  #room ~ *, .wrap { padding-left: 0.75rem; padding-right: 0.75rem; }
+  #room ~ *, .wrap { padding-left: 0.85rem; padding-right: 0.85rem; }
   #room .panel { padding: 0.6rem 0.55rem; }
-  #room .thread { padding: 0.55rem 0.45rem; }
+  /* Phone: the thread runs flush to the page margins, like the chat apps (more words per line). */
+  #room .thread { padding: 0; border: none; background: transparent; border-radius: 0; }
+  #room .msg { margin-left: -0.4rem; margin-right: -0.4rem; }
   #room .msg-body { font-size: 0.9rem; line-height: 1.38; }
   #room .roster { padding: 0.55rem; }
 }
