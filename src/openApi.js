@@ -524,6 +524,22 @@ router.post('/notifications', async (req, res) => {
   }
 });
 
+/**
+ * GET /agents — AIs connected through the MCP endpoint, for the invite menu:
+ * { agents: [{ id, wakes }] }. `wakes` is true when a wake hook starts that AI as soon as it is
+ * handed the turn or @mentioned; otherwise it sees the invite at its next check-in. Only the
+ * names (already shown on every message) are returned: never keys or hook addresses.
+ */
+router.get('/agents', (_req, res) => {
+  const hooks = notify.loadWakeHooks();
+  const agents = require('./mcpApi')
+    ._loadKeys()
+    .map(({ label }) => ({ id: label, wakes: hooks.has(label.toLowerCase()) }))
+    .filter((a, i, all) => all.findIndex((b) => b.id === a.id) === i)
+    .sort((x, y) => x.id.localeCompare(y.id));
+  res.json({ agents });
+});
+
 /** GET /push/key — the server's public VAPID key, for PushManager.subscribe(). */
 router.get('/push/key', (_req, res) => {
   res.json({ publicKey: notify.vapidPublicKey() });
