@@ -157,6 +157,18 @@
     return t.length > n ? `${t.slice(0, n)}…` : t;
   }
 
+  /** "12:09" today, "Sep 28, 12:09" earlier this year, "Sep 28 2025, 12:09" before that. */
+  function friendlyTime(iso) {
+    const d = new Date(iso);
+    if (!iso || Number.isNaN(d.getTime())) return '';
+    const now = new Date();
+    const time = d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' });
+    if (d.toDateString() === now.toDateString()) return time;
+    const opts = { month: 'short', day: 'numeric' };
+    if (d.getFullYear() !== now.getFullYear()) opts.year = 'numeric';
+    return `${d.toLocaleDateString([], opts)}, ${time}`;
+  }
+
   /** Re-render only when something changed, so text selections and open menus survive polling. */
   function renderMessages(messages, turn) {
     const sig = JSON.stringify([
@@ -205,7 +217,7 @@
             ? `<button type="button" class="your-turn" data-act="reply">Your turn · Reply</button>`
             : '';
         return `<div class="msg${state.selectedId === m.id ? ' selected' : ''}" data-id="${esc(m.id)}">
-        <div class="msg-head">${m.turn_id ? `${esc(m.turn_id)} · ` : ''}<span class="author">${esc(m.author)}</span> · ${esc(m.party)} · <time>${esc(m.created_at || '')}</time></div>${ref}
+        <div class="msg-head">${m.turn_id ? `${esc(m.turn_id)} · ` : ''}<span class="author">${esc(m.author)}</span><span class="party-tag">${esc(m.party)}</span> · <time datetime="${esc(m.created_at || '')}" title="${esc(m.created_at || '')}">${esc(friendlyTime(m.created_at))}</time></div>${ref}
         <div class="msg-body">${esc(m.body)}</div>${
           m.status ? `<div class="msg-head">status: ${esc(m.status)}</div>` : ''
         }${m.awaiting ? `<div class="msg-head">→ awaiting ${esc(m.awaiting.join(', '))}${m.implicit_turn ? ' (reply)' : ''}</div>` : ''}${turnBtn}${actions}
@@ -213,6 +225,76 @@
       })
       .join('');
     if (nearBottom) threadEl.scrollTop = threadEl.scrollHeight;
+    updateJump();
+  }
+
+  // ── Full-screen room view ─────────────────────────────────────────────
+
+  const jumpBtn = document.getElementById('jump-latest');
+  const infoBtn = document.getElementById('btn-info');
+  const infoPanel = document.getElementById('room-info');
+
+  function atBottom() {
+    return threadEl.scrollHeight - threadEl.scrollTop - threadEl.clientHeight < 60;
+  }
+
+  function updateJump() {
+    if (jumpBtn) jumpBtn.classList.toggle('hidden', atBottom());
+  }
+
+  threadEl.addEventListener('scroll', updateJump, { passive: true });
+  if (jumpBtn) {
+    jumpBtn.addEventListener('click', () => {
+      threadEl.scrollTop = threadEl.scrollHeight;
+      updateJump();
+    });
+  }
+
+  function setInfoOpen(open) {
+    if (!infoPanel || !infoBtn) return;
+    infoPanel.classList.toggle('hidden', !open);
+    infoBtn.setAttribute('aria-expanded', String(open));
+  }
+  if (infoBtn) infoBtn.addEventListener('click', () => setInfoOpen(infoPanel.classList.contains('hidden')));
+
+  /**
+   * Keep the room exactly the size of the visible screen, so the composer stays at the bottom
+   * and above the iPhone keyboard when it opens (100dvh alone does not track the keyboard).
+   */
+  function fitViewport() {
+    const vv = window.visualViewport;
+    if (!vv) return;
+    const root = document.documentElement.style;
+    root.setProperty('--vvh', `${vv.height}px`);
+    root.setProperty('--vvtop', `${vv.offsetTop}px`);
+  }
+  if (window.visualViewport) {
+    window.visualViewport.addEventListener('resize', fitViewport);
+    window.visualViewport.addEventListener('scroll', fitViewport);
+    fitViewport();
+  }
+  bodyInput.addEventListener('focus', () => {
+    // The keyboard takes a moment to open; keep the latest message in view.
+    const stick = atBottom();
+    setTimeout(() => {
+      fitViewport();
+      if (stick) threadEl.scrollTop = threadEl.scrollHeight;
+    }, 250);
+  });
+
+  /** Back to the room list without leaving: membership, turn and notifications stay. */
+  function showLobby() {
+    if (state.pollTimer) clearInterval(state.pollTimer);
+    state.pollTimer = null;
+    document.body.classList.remove('in-room');
+    setInfoOpen(false);
+    roomEl.classList.add('hidden');
+    lobbyEl.classList.remove('hidden');
+    try {
+      window.history.replaceState(null, '', '/open');
+    } catch {
+      /* address bar update is a convenience only */
+    }
   }
 
   // ── Reply / Quote / Copy ──────────────────────────────────────────────
@@ -333,6 +415,20 @@
     const who = turn.awaiting && turn.awaiting.length ? ` — awaiting ${turn.awaiting.join(', ')}` : '';
     const note = turn.note ? ` (${turn.note})` : '';
     el.textContent = `${turn.state}${who}${note}`;
+    const sub = document.getElementById('room-sub');
+    if (sub) {
+      const awaiting = turn.awaiting || [];
+      const mine = awaiting.some((a) => sameId(a, me()));
+      const others = awaiting.filter((a) => !sameId(a, me()));
+      let line = 'Open to anyone';
+      if (turn.state === 'input-required') {
+        line = mine ? 'Your turn' : `Waiting on ${others.join(', ')}`;
+        if (mine && others.length) line += ` · also ${others.join(', ')}`;
+      } else if (turn.state === 'completed') line = 'Settled';
+      else if (turn.state === 'dormant') line = 'Resting';
+      sub.textContent = line;
+      sub.classList.toggle('mine', turn.state === 'input-required' && mine);
+    }
   }
 
   const turnChip = document.getElementById('turn-chip');
@@ -433,6 +529,9 @@
     const r = state.room || {};
     const el = document.getElementById('room-id-display');
     if (el) el.textContent = r.title && r.title !== state.roomId ? `${r.title} (${state.roomId})` : state.roomId;
+    const title = document.getElementById('room-title');
+    if (title) title.textContent = r.title || state.roomId;
+    document.title = `${r.title || state.roomId} — Lyceum Commons`;
     if (visibilityItem) {
       visibilityItem.textContent =
         r.visibility === 'unlisted' ? 'Make listed (shown in room lists)' : 'Make unlisted (link only)';
@@ -680,7 +779,11 @@
     state.credential = credential || '';
     lobbyEl.classList.add('hidden');
     roomEl.classList.remove('hidden');
+    document.body.classList.add('in-room');
+    setInfoOpen(false);
+    fitViewport();
     document.getElementById('room-id-display').textContent = roomId;
+    document.getElementById('room-title').textContent = roomId;
     document.getElementById('you-display').textContent = identity;
     const partyEl = document.getElementById('you-party');
     partyEl.textContent = party;
@@ -853,18 +956,20 @@
     } catch (e) {
       showError(e.code, e.message);
     }
-    if (state.pollTimer) clearInterval(state.pollTimer);
-    state.pollTimer = null;
+    showLobby();
     state.roomId = '';
     state.handle = '';
     state.agentId = '';
     state.credential = '';
-    roomEl.classList.add('hidden');
-    lobbyEl.classList.remove('hidden');
     threadEl.innerHTML =
       '<p class="empty-thread">No messages yet. Parties stay labeled when they speak.</p>';
     rosterEl.innerHTML = '';
     bodyInput.value = '';
+  });
+
+  document.getElementById('btn-back').addEventListener('click', () => {
+    showLobby();
+    document.title = 'Open — Lyceum Commons';
   });
 
   // Opened from a notification link or the Home Screen icon with a remembered name: go straight in.
