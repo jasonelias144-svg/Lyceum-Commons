@@ -197,7 +197,7 @@
         }
       }
     }
-    threadEl.innerHTML = messages
+    threadEl.innerHTML = '<p class="sides-legend" aria-hidden="true">People ←&ensp;·&ensp;→ AIs</p>' + messages
       .map((m) => {
         const ref = m.reply_to
           ? `<div class="msg-reply-ref">↳ reply to ${esc(m.reply_to_author || '')}${
@@ -216,8 +216,12 @@
           m.id === turnMsgId && state.selectedId !== m.id
             ? `<button type="button" class="your-turn" data-act="reply">Your turn · Reply</button>`
             : '';
-        return `<div class="msg${state.selectedId === m.id ? ' selected' : ''}" data-id="${esc(m.id)}">
-        <div class="msg-head">${m.turn_id ? `${esc(m.turn_id)} · ` : ''}<span class="author">${esc(m.author)}</span><span class="party-tag">${esc(m.party)}</span> · <time datetime="${esc(m.created_at || '')}" title="${esc(m.created_at || '')}">${esc(friendlyTime(m.created_at))}</time></div>${ref}
+        // People on the left, AIs on the right: the side is the party label on screen;
+        // the word stays in the text for screen readers, copies and transcripts.
+        const side = m.party === 'ai' ? 'from-ai' : 'from-human';
+        const mine = m.party === state.party && sameId(m.author, me()) ? ' mine' : '';
+        return `<div class="msg ${side}${mine}${state.selectedId === m.id ? ' selected' : ''}" data-id="${esc(m.id)}">
+        <div class="msg-head">${m.turn_id ? `${esc(m.turn_id)} · ` : ''}<span class="author">${esc(m.author)}</span><span class="visually-hidden"> (${esc(m.party)})</span> · <time datetime="${esc(m.created_at || '')}" title="${esc(m.created_at || '')}">${esc(friendlyTime(m.created_at))}</time></div>${ref}
         <div class="msg-body">${esc(m.body)}</div>${
           m.status ? `<div class="msg-head">status: ${esc(m.status)}</div>` : ''
         }${m.awaiting ? `<div class="msg-head">→ awaiting ${esc(m.awaiting.join(', '))}${m.implicit_turn ? ' (reply)' : ''}</div>` : ''}${turnBtn}${actions}
@@ -250,12 +254,100 @@
     });
   }
 
+  const shareBtn = document.getElementById('btn-share');
+  const sharePanel = document.getElementById('share-panel');
+  const shareAgents = document.getElementById('share-agents');
+
   function setInfoOpen(open) {
     if (!infoPanel || !infoBtn) return;
+    if (open) setShareOpen(false);
     infoPanel.classList.toggle('hidden', !open);
     infoBtn.setAttribute('aria-expanded', String(open));
   }
   if (infoBtn) infoBtn.addEventListener('click', () => setInfoOpen(infoPanel.classList.contains('hidden')));
+
+  function setShareOpen(open) {
+    if (!sharePanel || !shareBtn) return;
+    if (open) {
+      setInfoOpen(false);
+      renderShareAgents();
+    }
+    sharePanel.classList.toggle('hidden', !open);
+    shareBtn.setAttribute('aria-expanded', String(open));
+  }
+  if (shareBtn) shareBtn.addEventListener('click', () => setShareOpen(sharePanel.classList.contains('hidden')));
+
+  function roomName() {
+    return (state.room && state.room.title) || state.roomId;
+  }
+
+  async function copyText(text, button, done) {
+    try {
+      await navigator.clipboard.writeText(text);
+      flash(button, done);
+    } catch {
+      window.prompt('Copy this', text);
+    }
+  }
+
+  /** People: the phone's share sheet (Messages, Mail, …) where there is one; otherwise copy. */
+  document.getElementById('share-invite').addEventListener('click', async (ev) => {
+    const text = `Join me in "${roomName()}" on Lyceum Commons:`;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title: `${roomName()} — Lyceum Commons`, text, url: roomLink() });
+        return;
+      } catch (e) {
+        if (e && e.name === 'AbortError') return;
+      }
+    }
+    copyText(`${text} ${roomLink()}`, ev.currentTarget, 'Invite copied');
+  });
+  document.getElementById('share-copy').addEventListener('click', (ev) => copyText(roomLink(), ev.currentTarget, 'Link copied'));
+
+  /** Any AI app that has the Lyceum Commons connector can act on this. */
+  document.getElementById('share-ai-copy').addEventListener('click', (ev) => {
+    const text =
+      `Please join the Lyceum Commons room "${roomName()}" (room id: ${state.roomId}) with the Lyceum Commons connector. ` +
+      `Read it with read_room, then reply there with post_message.\nLink for people: ${roomLink()}`;
+    copyText(text, ev.currentTarget, 'Invite copied');
+  });
+
+  let agentsCache = null;
+  async function renderShareAgents() {
+    if (!shareAgents) return;
+    try {
+      if (!agentsCache) agentsCache = (await api('GET', '/agents')).agents || [];
+    } catch {
+      shareAgents.innerHTML = '<p class="menu-note">Couldn\'t load the connected AIs.</p>';
+      return;
+    }
+    const list = agentsCache.filter((a) => !sameId(a.id, me()));
+    shareAgents.innerHTML = list.length
+      ? list
+          .map(
+            (a) =>
+              `<button type="button" class="share-agent" data-agent="${esc(a.id)}"><strong>${esc(a.id)}</strong><span>${
+                a.wakes ? 'wakes now' : 'sees it at its next check-in'
+              }</span></button>`
+          )
+          .join('')
+      : '<p class="menu-note">No AIs are connected to this Lyceum yet.</p>';
+  }
+  if (shareAgents) {
+    shareAgents.addEventListener('click', (ev) => {
+      const btn = ev.target.closest('button[data-agent]');
+      if (!btn) return;
+      const id = btn.dataset.agent;
+      // Hand it the turn with a short note the person can edit before sending.
+      setAwaiting([id]);
+      if (!bodyInput.value.trim()) bodyInput.value = `@${id}, you're invited to this room. `;
+      bodyInput.dispatchEvent(new Event('input'));
+      setShareOpen(false);
+      bodyInput.focus();
+      bodyInput.setSelectionRange(bodyInput.value.length, bodyInput.value.length);
+    });
+  }
 
   /**
    * Keep the room exactly the size of the visible screen, so the composer stays at the bottom
@@ -288,6 +380,7 @@
     state.pollTimer = null;
     document.body.classList.remove('in-room');
     setInfoOpen(false);
+    setShareOpen(false);
     roomEl.classList.add('hidden');
     lobbyEl.classList.remove('hidden');
     try {
@@ -781,6 +874,7 @@
     roomEl.classList.remove('hidden');
     document.body.classList.add('in-room');
     setInfoOpen(false);
+    setShareOpen(false);
     fitViewport();
     document.getElementById('room-id-display').textContent = roomId;
     document.getElementById('room-title').textContent = roomId;

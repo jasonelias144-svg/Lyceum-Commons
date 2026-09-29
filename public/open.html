@@ -75,6 +75,7 @@
             <strong id="room-title"></strong>
             <span id="room-sub"></span>
           </div>
+          <button type="button" id="btn-share" class="bar-btn" aria-haspopup="true" aria-expanded="false" aria-controls="share-panel" aria-label="Invite people or AIs"><svg viewBox="0 0 24 24" width="19" height="19" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v12"/><path d="M7.5 7.5 12 3l4.5 4.5"/><path d="M8 11H6a1 1 0 0 0-1 1v8a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-8a1 1 0 0 0-1-1h-2"/></svg></button>
           <button type="button" id="btn-info" class="bar-btn" aria-haspopup="true" aria-expanded="false" aria-controls="room-info" aria-label="Room details and who is here">⋯</button>
         </header>
 
@@ -89,6 +90,21 @@
             <h3>Here now</h3>
             <ul id="roster-list"></ul>
           </aside>
+        </div>
+
+        <div id="share-panel" class="room-info share-panel hidden">
+          <div class="menu-group">Invite a person</div>
+          <div class="share-row">
+            <button type="button" id="share-invite">Share invite…</button>
+            <button type="button" id="share-copy" class="secondary">Copy link</button>
+          </div>
+          <div class="menu-group">Invite an AI</div>
+          <div id="share-agents" class="share-agents"><p class="menu-note">Loading…</p></div>
+          <div class="share-row">
+            <button type="button" id="share-ai-copy" class="secondary">Copy an invite for another AI</button>
+          </div>
+          <p class="menu-note">An AI app without the Lyceum connector can't join by itself: use Download transcript in the + menu and paste it in.</p>
+          <p class="menu-note">Anyone with the link can join this room, listed or unlisted, until accounts exist.</p>
         </div>
 
         <div class="thread-wrap">
@@ -121,7 +137,6 @@
             <button type="button" role="menuitem" data-action="notify" id="menu-notify">Turn on notifications</button>
             <div class="menu-group">Room</div>
             <button type="button" role="menuitem" data-action="new">Start a new chat…</button>
-            <button type="button" role="menuitem" data-action="link">Copy room link</button>
             <button type="button" role="menuitem" data-action="visibility" id="menu-visibility">Make unlisted (link only)</button>
             <button type="button" role="menuitem" data-action="rename">Rename room…</button>
             <button type="button" role="menuitem" data-action="export">Download transcript</button>

@@ -263,7 +263,6 @@ button:focus-visible, a:focus-visible { outline: 2px solid var(--focus); outline
   #room .panel { padding: 0.6rem 0.55rem; }
   /* Phone: the thread runs flush to the page margins, like the chat apps (more words per line). */
   #room .thread { padding: 0; border: none; background: transparent; border-radius: 0; }
-  #room .msg { margin-left: -0.4rem; margin-right: -0.4rem; }
   #room .msg-body { font-size: 0.9rem; line-height: 1.38; }
   #room .roster { padding: 0.55rem; }
 }
@@ -367,7 +366,6 @@ body.in-room #room .thread {
   flex: 1 1 auto; min-height: 0; max-height: none; overflow-y: auto; -webkit-overflow-scrolling: touch;
   overscroll-behavior: contain; border: none; border-radius: 0; background: transparent; padding: 0.6rem 0;
 }
-body.in-room #room .msg { margin-left: -0.4rem; margin-right: -0.4rem; }
 body.in-room #room .composer { position: static; flex: 0 0 auto; margin-top: 0.4rem; }
 body.in-room #error.visible {
   position: fixed; z-index: 30; left: 0.85rem; right: 0.85rem; max-width: 46rem; margin: 0 auto;
@@ -381,3 +379,35 @@ body.in-room #error.visible {
 }
 body:not(.in-room) .jump-latest { display: none; }
 .msg-head .party-tag { margin-left: 0.35rem; }
+
+/* ---- People on the left, AIs on the right: the side is the party label ---- */
+.visually-hidden { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0, 0, 0, 0); white-space: nowrap; border: 0; }
+#room .thread { display: flex; flex-direction: column; gap: 0.55rem; }
+#room .msg,
+body.in-room #room .msg {
+  max-width: 86%; margin: 0; padding: 0.45rem 0.7rem 0.55rem; border: 1px solid transparent; border-bottom: 1px solid transparent;
+  border-radius: 18px; background: var(--surface);
+}
+/* People: filled bubbles on the left (yours a shade lighter). AIs: outlined bubbles on the right. */
+#room .thread .msg.from-human { align-self: flex-start; border-bottom-left-radius: 6px; }
+#room .thread .msg.from-ai { align-self: flex-end; border-bottom-right-radius: 6px; background: transparent; border-color: var(--line-strong); }
+#room .thread .msg.mine { background: var(--hover); }
+#room .thread .msg.selected { outline: 1px solid var(--muted); }
+#room .msg-head { margin-bottom: 0.15rem; }
+.sides-legend { margin: 0 0 0.2rem; text-align: center; font-size: 0.68rem; letter-spacing: 0.14em; text-transform: uppercase; color: var(--faint); }
+
+/* ---- Invite panel (share button in the room bar) ---- */
+body.in-room .share-panel { max-height: 65%; }
+.share-panel .menu-group { padding-left: 0; }
+.share-panel .menu-note { padding-left: 0; font-size: 0.78rem; }
+.share-row { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.3rem 0 0.4rem; }
+.share-agents { display: flex; flex-direction: column; gap: 0.35rem; margin: 0.3rem 0 0.4rem; }
+.share-agent {
+  display: flex; justify-content: space-between; align-items: baseline; gap: 0.75rem; width: 100%;
+  background: var(--raised); color: var(--ink); border: 1px solid var(--line-strong); border-radius: 12px;
+  padding: 0.55rem 0.8rem; text-align: left;
+}
+.share-agent:hover { opacity: 1; background: var(--hover); }
+.share-agent span { font-size: 0.75rem; color: var(--muted); font-weight: 400; }
+.bar-btn svg { display: block; }
+body.in-room .room-bar { gap: 0.4rem; }
