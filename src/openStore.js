@@ -105,6 +105,13 @@ function onMessage(fn) {
   messageListeners.push(fn);
 }
 
+/** Called after an explicit leave as (room, party, id). Expiry is not a leave. */
+const leaveListeners = [];
+
+function onLeave(fn) {
+  leaveListeners.push(fn);
+}
+
 function newId(prefix) {
   return `${prefix}_${crypto.randomBytes(8).toString('hex')}`;
 }
@@ -768,6 +775,13 @@ function leaveParty(room, party, id) {
   if (!room.roster.has(key) && !members[key]) return false;
   delete members[key];
   if (!removeParty(room, party, id)) dropAwaiting(room, id); // an expired member leaving
+  for (const fn of leaveListeners) {
+    try {
+      fn(room, party, id);
+    } catch (err) {
+      console.error('Leave listener failed:', err);
+    }
+  }
   maybeGc(room);
   return true;
 }
@@ -818,6 +832,7 @@ module.exports = {
   addMessage,
   lastRoomOf,
   onMessage,
+  onLeave,
   setTurn,
   turnOf,
   markSeen,

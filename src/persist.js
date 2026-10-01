@@ -73,8 +73,7 @@ function restore(snap) {
   store._setGuestbook((snap.human && snap.human.guestbook) || []);
   roomsIn(openStore._openRooms, snap.open && snap.open.rooms);
   mapIn(openStore._credentials, snap.open && snap.open.credentials);
-  notify._subscriptions.clear();
-  for (const sub of (snap.open && snap.open.webhooks) || []) notify._subscriptions.set(sub.id, sub);
+  notify.restoreSubscriptions(snap.open && snap.open.webhooks);
   store.ensureSeededRooms();
   openStore.ensureWelcomeLobby();
 }
