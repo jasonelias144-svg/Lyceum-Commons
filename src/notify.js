@@ -9,6 +9,9 @@
  *      mention  — a post @mentions you
  *      message  — a new post in a room you belong to
  *    Each post produces at most one delivery per subscription (the most specific event it asked for).
+ *    Every subscription belongs to one room: registering needs that name to be present in that room
+ *    right now, only that room's posts are delivered, and leaving the room drops it. Subscriptions
+ *    with no room (from before this rule) are dropped, not delivered.
  *    Delivery is a POST with a JSON body signed as `X-Lyceum-Signature: sha256=<hmac>` using the
  *    secret returned at registration. URLs on ntfy servers (ntfy.sh, ntfy.<domain>) get a plain-text push, so a
  *    phone shows something readable.
@@ -44,6 +47,7 @@ const net = require('net');
 const path = require('path');
 const webpush = require('web-push');
 const openStore = require('./openStore');
+const { protocolError } = require('./errors');
 
 const EVENTS = ['turn', 'mention', 'message'];
 const MAX_PER_HOUR = 60;
@@ -152,12 +156,29 @@ async function checkDestination(urlString) {
   }
 }
 
-async function subscribe({ party, who, url, events }) {
+/**
+ * A subscription is scoped to one room, and only someone present in that room under that name
+ * may register it. Human handles are not authenticated yet, so without this anyone could
+ * subscribe as anyone and read every room that name belongs to.
+ */
+function assertPresent(party, who, roomId) {
+  if (typeof roomId !== 'string' || !roomId) {
+    throw protocolError('invalid_request', 'room_id is required: notifications belong to one room.');
+  }
+  const room = openStore.getRoom(roomId);
+  if (!room) throw protocolError('room_not_found');
+  const present = party === 'ai' ? openStore.hasAi(room, who) : openStore.hasHuman(room, who);
+  if (!present) throw protocolError('not_joined', 'Join this room under that name before turning on its notifications.');
+  return room;
+}
+
+async function subscribe({ party, who, url, events, room_id }) {
   const clean = checkUrlShape(url);
   const wanted = events && events.length ? events : ['turn', 'mention'];
   if (!wanted.every((e) => EVENTS.includes(e))) {
     throw badUrl(`events must be drawn from: ${EVENTS.join(', ')}.`);
   }
+  assertPresent(party, who, room_id);
   if (subscriptions.size >= MAX_SUBSCRIPTIONS) {
     throw badUrl('This server has reached its webhook limit. Try again later.');
   }
@@ -171,6 +192,7 @@ async function subscribe({ party, who, url, events }) {
     secret: crypto.randomBytes(24).toString('hex'),
     party,
     who,
+    room_id,
     url: clean,
     events: Array.from(new Set(wanted)),
     created_at: new Date().toISOString(),
@@ -187,6 +209,7 @@ async function subscribe({ party, who, url, events }) {
 function describe(sub) {
   return {
     id: sub.id,
+    room_id: sub.room_id || null,
     url: sub.url,
     events: sub.events,
     enabled: sub.enabled,
@@ -354,12 +377,14 @@ function checkPushSubscription(sub) {
 }
 
 /** Store (or replace, for the same device endpoint) a Web Push subscription. */
-function subscribeWebPush({ party, who, subscription, events }) {
+function subscribeWebPush({ party, who, subscription, events, room_id }) {
   const push = checkPushSubscription(subscription);
   const wanted = events && events.length ? events : ['turn', 'mention'];
   if (!wanted.every((e) => EVENTS.includes(e))) throw badUrl(`events must be drawn from: ${EVENTS.join(', ')}.`);
+  assertPresent(party, who, room_id);
+  // One subscription per device per room: the same device subscribing again here replaces it.
   for (const [id, s] of subscriptions) {
-    if (s.push && s.push.endpoint === push.endpoint) subscriptions.delete(id);
+    if (s.push && s.push.endpoint === push.endpoint && s.room_id === room_id) subscriptions.delete(id);
   }
   if (subscriptions.size >= MAX_SUBSCRIPTIONS) throw badUrl('This server has reached its webhook limit. Try again later.');
   const mine = Array.from(subscriptions.values()).filter((s) => s.party === party && s.who === who);
@@ -371,6 +396,7 @@ function subscribeWebPush({ party, who, subscription, events }) {
     secret: crypto.randomBytes(24).toString('hex'),
     party,
     who,
+    room_id,
     kind: 'webpush',
     url: `${new URL(push.endpoint).origin}/…`,
     push,
@@ -549,8 +575,14 @@ function requestWake(agent, reason) {
 
 /** Called by openStore after every post. Never throws; deliveries run in the background. */
 function onMessage(room, message) {
-  for (const sub of subscriptions.values()) {
-    if (!sub.enabled) continue;
+  for (const [id, sub] of subscriptions) {
+    if (!sub.room_id) {
+      subscriptions.delete(id); // registered before subscriptions were scoped to a room
+      continue;
+    }
+    if (sub.room_id !== room.id || !sub.enabled) continue;
+    // Only members hear a room; a leave drops the subscription, and this covers anything missed.
+    if (!openStore.isMember(room, sub.party, sub.who)) continue;
     const event = eventFor(room, message, sub.party, sub.who);
     if (!event) continue;
     const wanted = EVENTS.slice(EVENTS.indexOf(event)).find((e) => sub.events.includes(e));
@@ -566,6 +598,19 @@ function onMessage(room, message) {
   }
 }
 
+/** Leaving a room ends that participant's subscriptions for it. */
+function dropMember(room, party, who) {
+  for (const [id, s] of subscriptions) {
+    if (s.room_id === room.id && s.party === party && s.who === who) subscriptions.delete(id);
+  }
+}
+
+/** Snapshot restore: keep only room-scoped subscriptions. */
+function restoreSubscriptions(list) {
+  subscriptions.clear();
+  for (const sub of list || []) if (sub && sub.id && sub.room_id) subscriptions.set(sub.id, sub);
+}
+
 function clearAll() {
   subscriptions.clear();
   for (const st of wakeState.values()) if (st.timer) clearTimeout(st.timer);
@@ -573,6 +618,7 @@ function clearAll() {
 }
 
 openStore.onMessage(onMessage);
+openStore.onLeave(dropMember);
 
 module.exports = {
   EVENTS,
@@ -590,6 +636,7 @@ module.exports = {
   isPrivateAddress,
   isNtfyHost,
   clearAll,
+  restoreSubscriptions,
   _subscriptions: subscriptions,
   _wakeState: wakeState,
   WAKE_INTERVAL_MS,
