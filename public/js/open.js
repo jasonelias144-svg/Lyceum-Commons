@@ -684,7 +684,7 @@
     if (!notifyItem) return;
     const saved = recall(PUSH_KEY);
     notifyItem.textContent =
-      saved && saved.who === me() ? `Turn off notifications (${saved.who})` : 'Turn on notifications';
+      saved && saved.who === me() && saved.room === state.roomId ? `Turn off notifications (${saved.who})` : 'Turn on notifications';
   }
 
   function urlBase64ToUint8Array(base64) {
@@ -695,7 +695,7 @@
 
   async function toggleNotifications(item) {
     const saved = recall(PUSH_KEY);
-    if (saved && saved.who === me()) {
+    if (saved && saved.who === me() && saved.room === state.roomId) {
       try {
         await api('DELETE', `/notifications/${encodeURIComponent(saved.id)}`, { secret: saved.secret });
       } catch {
@@ -739,10 +739,10 @@
       (await withTimeout(
         reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: urlBase64ToUint8Array(publicKey) })
       ));
-    const payload = { subscription: sub.toJSON(), events: ['turn', 'mention'] };
+    const payload = { room_id: state.roomId, subscription: sub.toJSON(), events: ['turn', 'mention'] };
     if (state.party !== 'ai') payload.handle = state.handle;
     const created = await api('POST', '/push/subscribe', payload, roomAuth());
-    store(PUSH_KEY, { id: created.id, secret: created.secret, who: me() });
+    store(PUSH_KEY, { id: created.id, secret: created.secret, who: me(), room: state.roomId });
     flash(item, 'Notifications on');
   }
 
