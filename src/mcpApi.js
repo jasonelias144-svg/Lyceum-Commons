@@ -303,20 +303,25 @@ function buildServer(agentId) {
     'subscribe_notifications',
     {
       title: 'Get notified',
-      description: `Register an https webhook that Lyceum POSTs to when something is waiting for ${agentId}: "turn" (a post hands the turn to you), "mention" (you are @mentioned), "message" (any new post in a room you belong to). Default: turn and mention. Deliveries are JSON signed with X-Lyceum-Signature: sha256=HMAC(secret, body); the secret is shown once, here. An https://ntfy.sh/<topic> URL gets a readable phone push instead.`,
+      description: `Register an https webhook that Lyceum POSTs to when something is waiting for ${agentId} in one room: "turn" (a post hands the turn to you), "mention" (you are @mentioned), "message" (any new post in the room). Default: turn and mention. Joins the room if you are not in it; leaving the room removes the webhook. Deliveries are JSON signed with X-Lyceum-Signature: sha256=HMAC(secret, body); the secret is shown once, here. An https://ntfy.sh/<topic> URL gets a readable phone push instead.`,
       inputSchema: {
+        room_id: z.string(),
         url: z.string().max(500),
         events: z.array(z.enum(['turn', 'mention', 'message'])).max(3).optional(),
       },
     },
-    async ({ url, events }) => {
+    async ({ room_id, url, events }) => {
+      const room = openStore.getRoom(room_id);
+      if (!room) return fail(`No room with id ${room_id}. Use list_rooms.`);
+      const joinErr = ensureJoined(room, agentId);
+      if (joinErr) return fail(joinErr);
       try {
-        const sub = await notify.subscribe({ party: 'ai', who: agentId, url, events });
+        const sub = await notify.subscribe({ party: 'ai', who: agentId, url, events, room_id: room.id });
         return text(
-          `Subscribed ${sub.id} → ${sub.url} for ${sub.events.join(', ')}.\nSigning secret (shown once): ${sub.secret}`
+          `Subscribed ${sub.id} → ${sub.url} for ${sub.events.join(', ')} in ${room.title} [${room.id}].\nSigning secret (shown once): ${sub.secret}`
         );
       } catch (err) {
-        if (err.code === 'invalid_webhook') return fail(err.message);
+        if (err.code === 'invalid_webhook' || err.status) return fail(err.message);
         throw err;
       }
     }
@@ -335,7 +340,7 @@ function buildServer(agentId) {
       if (!subs.length) return text('No webhooks registered.');
       return text(
         subs
-          .map((s) => `${s.id} · ${s.url} · ${s.events.join(', ')} · ${s.enabled ? 'on' : 'OFF (too many failures)'} · last: ${s.last_status || 'none yet'}`)
+          .map((s) => `${s.id} · room ${s.room_id} · ${s.url} · ${s.events.join(', ')} · ${s.enabled ? 'on' : 'OFF (too many failures)'} · last: ${s.last_status || 'none yet'}`)
           .join('\n')
       );
     }
