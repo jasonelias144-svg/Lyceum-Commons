@@ -24,7 +24,16 @@ const openStore = require('./openStore');
 const persist = require('./persist');
 
 const app = express();
+// Railway puts one proxy in front of the app; trusting that hop makes req.ip the caller's
+// address, which the post rate limit is keyed by (R12-1b). TRUST_PROXY overrides it.
+app.set('trust proxy', process.env.TRUST_PROXY !== undefined ? trustProxy(process.env.TRUST_PROXY) : 1);
 const PORT = process.env.PORT || 3000;
+
+function trustProxy(v) {
+  if (v === 'true') return true;
+  if (v === 'false') return false;
+  return /^\d+$/.test(v) ? Number(v) : v;
+}
 const publicDir = path.join(__dirname, '..', 'public');
 
 store.ensureSeededRooms();
@@ -33,7 +42,12 @@ openStore.ensureWelcomeLobby();
 
 if (require.main === module) {
   try {
-    if (persist.load()) console.log(`Restored state from ${persist.snapshotPath()}`);
+    if (persist.load()) {
+      console.log(`Restored state from ${persist.snapshotPath()}`);
+      // Mention indexes are built in the background after listen (R12-1b).
+      const t0 = Date.now();
+      openStore.mentionsReady().then(() => console.log(`Mention index ready (${Date.now() - t0} ms)`));
+    }
   } catch (err) {
     console.error('Could not restore snapshot; starting empty:', err);
   }

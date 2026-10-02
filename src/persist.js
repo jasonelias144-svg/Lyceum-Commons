@@ -76,8 +76,9 @@ function restore(snap) {
   notify.restoreSubscriptions(snap.open && snap.open.webhooks);
   store.ensureSeededRooms();
   openStore.ensureWelcomeLobby();
-  // Mention indexes are kept only in memory; build them now, before the server listens (R12-1).
-  openStore.indexAllMentions();
+  // Mention indexes are kept only in memory. Build them a slice at a time once the server is
+  // answering (R12-1b); an inbox waits until they are all there (R12-1).
+  openStore.indexMentionsInBackground();
 }
 
 /** Load the snapshot if there is one. Returns true when state was restored. */
