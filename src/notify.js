@@ -163,12 +163,12 @@ async function checkDestination(urlString) {
  */
 function assertPresent(party, who, roomId) {
   if (typeof roomId !== 'string' || !roomId) {
-    throw protocolError('invalid_request', 'room_id is required: notifications belong to one room.');
+    throw protocolError('invalid_request', 'Say which room: notifications now work one room at a time, so send room_id. Notifications set up before this change were removed; turn them on again in each room you want.');
   }
   const room = openStore.getRoom(roomId);
   if (!room) throw protocolError('room_not_found');
   const present = party === 'ai' ? openStore.hasAi(room, who) : openStore.hasHuman(room, who);
-  if (!present) throw protocolError('not_joined', 'Join this room under that name before turning on its notifications.');
+  if (!present) throw protocolError('not_joined', 'You can only turn on notifications for a room you are in right now. Join the room under this name first, then try again.');
   return room;
 }
 
