@@ -171,6 +171,30 @@ describe('Post rate limit (R12-1b)', () => {
       assert.match(lines[0], /ONE rate-limit allowance/);
     });
 
+    it('treats a whitespace-only OPEN_CLIENT_IP_HEADER as unset with a warning, and warns that x-forwarded-for can be faked (L-3)', () => {
+      const lines = [];
+      const warn = console.warn;
+      const railway = process.env.RAILWAY_ENVIRONMENT;
+      console.warn = (m) => lines.push(String(m));
+      try {
+        process.env.RAILWAY_ENVIRONMENT = 'production';
+        process.env.OPEN_CLIENT_IP_HEADER = '   ';
+        assert.equal(rateLimit.clientIpHeader(), 'x-real-ip');
+        assert.equal(rateLimit.clientIpHeader(), 'x-real-ip');
+        assert.equal(lines.length, 1, lines.join('\n'));
+        assert.match(lines[0], /is set but blank, so it counts as unset/);
+        process.env.OPEN_CLIENT_IP_HEADER = 'X-Forwarded-For';
+        assert.equal(rateLimit.clientIpHeader(), 'x-forwarded-for');
+        assert.equal(lines.length, 2);
+        assert.match(lines[1], /"x-forwarded-for"\. Behind most proxies/);
+      } finally {
+        console.warn = warn;
+        if (railway === undefined) delete process.env.RAILWAY_ENVIRONMENT;
+        else process.env.RAILWAY_ENVIRONMENT = railway;
+        process.env.OPEN_CLIENT_IP_HEADER = 'x-real-ip';
+      }
+    });
+
     it('logs each keying state once, without addresses', () => {
       const lines = [];
       const log = console.log;
