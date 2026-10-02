@@ -5,6 +5,7 @@
 const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const openStore = require('../src/openStore');
+const persist = require('../src/persist');
 
 let server;
 let base;
@@ -36,6 +37,11 @@ async function json(method, path, body) {
 
 const newRoom = async () => (await json('POST', '/api/open/rooms', { title: '8d' })).data.room_id;
 const storeInbox = (handle) => ({ data: { items: openStore.inbox('human', handle) } });
+/** QC Handoff 12's crafted body: 64 @s, each a name that folds long, followed by many places a name could end. */
+const crafted = (u) =>
+  Array.from({ length: 64 }, (_, i) => '@' + String.fromCharCode(0x4e00 + i, 0x3400 + u) + '\ufdfa' + '!'.repeat(52))
+    .join(' ')
+    .slice(0, 3990);
 const joinHuman = (room, handle) => json('POST', `/api/open/rooms/${room}/join`, { handle, party: 'human' });
 
 describe('Names and @mentions (8d, 8e, R8e-1)', () => {
@@ -159,5 +165,45 @@ describe('Names and @mentions (8d, 8e, R8e-1)', () => {
     const ai = 'a'.repeat(64);
     assert.equal(openStore.mentionsName(`over to you @${ai}.`, ai), true);
     assert.equal(openStore.mentionsName(`over to you @${ai}x`, ai), false);
+  });
+
+  it('R12-2: a crafted post costs a few milliseconds, not tens', async () => {
+    const room = await newRoom();
+    await joinHuman(room, 'x');
+    const r = openStore._openRooms.get(room);
+    const n = 50;
+    const t0 = process.hrtime.bigint();
+    for (let u = 1; u <= n; u++) openStore.addMessage(r, { author: 'x', party: 'human', body: crafted(u) });
+    const avg = Number(process.hrtime.bigint() - t0) / 1e6 / n;
+    assert.ok(avg < 10, `a crafted post took ${avg.toFixed(1)} ms on average`);
+    // The caps keep ordinary names mentionable: up to 16 places a name could end per @.
+    const sixteen = 'a b c d e f g h i j k l m n o p';
+    assert.equal(openStore.mentionsName(`hi @${sixteen}, welcome`, sixteen), true);
+    assert.equal(openStore.mentionsName('hi @ana, @bob and @Mary Ann!', 'mary ann'), true);
+  });
+
+  it('R12-1: after a restart, the first inbox is fast and mentions still work', async () => {
+    const room = await newRoom();
+    await joinHuman(room, 'x');
+    const r = openStore._openRooms.get(room);
+    for (let u = 1; u <= 300; u++) openStore.addMessage(r, { author: 'x', party: 'human', body: crafted(u) });
+    openStore.addMessage(r, { author: 'x', party: 'human', body: 'over to you @ana' });
+    const snap = JSON.parse(JSON.stringify(persist.serialize()));
+    persist.restore(snap); // what boot does, before the server listens
+    let t0 = Date.now();
+    const items = openStore.inbox('ai', 'fresh-bot');
+    assert.equal(items.length, 0);
+    assert.ok(Date.now() - t0 < 250, `first inbox after restart took ${Date.now() - t0} ms`);
+    t0 = Date.now();
+    const ana = openStore.inbox('human', 'ana').find((i) => i.room_id === room);
+    assert.ok(Date.now() - t0 < 250, `inbox took ${Date.now() - t0} ms`);
+    assert.equal(ana.mentions, 1);
+    // An AI's REST inbox reads only its own room, so other rooms' messages cost it nothing.
+    const other = await newRoom();
+    const join = await json('POST', `/api/open/rooms/${other}/join`, { agent_id: 'fresh-bot', party: 'ai' });
+    t0 = Date.now();
+    const res = await fetch(`${base}/api/open/inbox`, { headers: { Authorization: `Bearer ${join.data.credential}` } });
+    assert.equal(res.status, 200);
+    assert.ok(Date.now() - t0 < 250, `REST inbox took ${Date.now() - t0} ms`);
   });
 });
