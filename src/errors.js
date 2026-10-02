@@ -14,6 +14,10 @@ const CODES = {
     message: 'Acting as a human name needs the guest key that holds it, sent as X-Lyceum-Guest. The browser that joined sends it for you.',
   },
   handle_taken: { status: 409, message: 'That name, or one that looks the same, is already in use in this room.' },
+  guest_name_limit: {
+    status: 403,
+    message: 'One guest key can hold up to 5 names. Use a name you already have, or leave every room where you use one to free it.',
+  },
   invalid_body: { status: 400, message: 'Message body must be plain text within the room format limit.' },
   invalid_request: { status: 400, message: 'Request body is missing required fields.' },
   invalid_signature: {

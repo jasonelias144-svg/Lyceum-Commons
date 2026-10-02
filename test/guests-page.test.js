@@ -31,6 +31,9 @@ describe('/guests page', () => {
       assert.ok(text.includes(`<h2>${heading}</h2>`), heading);
     }
     assert.match(text, /A name you stop using for 30 days is released/);
+    assert.match(text, /up to 5 different names per guest key/);
+    assert.match(text, /While a name like that is in use in a room, nobody can take it/);
+    assert.doesNotMatch(text, /Others see only the name you chose/);
     assert.doesNotMatch(text, /to confirm/i);
   });
 
