@@ -406,8 +406,8 @@ router.post('/rooms/:id/heartbeat', (req, res) => {
 });
 
 /**
- * GET /inbox  Authorization: Bearer (ai, any room credential). The human ?handle= form is off until guest keys (#33).
- * Rooms whose turn awaits you, rooms mentioning you, rooms you belong to with unread messages.
+ * GET /inbox  Authorization: Bearer (ai room credential). The human ?handle= form is off until guest keys (#33).
+ * The credential's own room only: whether its turn awaits you, it mentions you, or it has unread messages.
  */
 router.get('/inbox', (req, res) => {
   try {
@@ -415,7 +415,11 @@ router.get('/inbox', (req, res) => {
     if (bearer) {
       const binding = openStore.authenticate(bearer);
       if (!binding) throw protocolError('invalid_credential');
-      return res.json({ agent_id: binding.agent_id, items: openStore.inbox('ai', binding.agent_id) });
+      // A room credential only proves presence in its own room. Anyone can mint one under any free
+      // name in a room of their own, so a cross-room view would turn a name into that person's
+      // rooms (QC I-1). MCP check_inbox is keyed per connector and keeps the cross-room view.
+      const items = openStore.inbox('ai', binding.agent_id).filter((i) => i.room_id === binding.room_id);
+      return res.json({ agent_id: binding.agent_id, room_id: binding.room_id, items });
     }
     // Human names are declarations, not accounts, so a name alone cannot open an inbox: it would
     // tell anyone which rooms (including unlisted ones) a person is in. Humans get an inbox back

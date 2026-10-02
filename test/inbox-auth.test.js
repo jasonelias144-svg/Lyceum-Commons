@@ -58,4 +58,42 @@ describe('Inbox auth', () => {
     assert.equal(ok.data.agent_id, 'inbox-bot');
     assert.ok(ok.data.items.some((i) => i.room_id === 'open-welcome'));
   });
+
+  it('I-1: an AI credential named like a person gets none of that person\'s rooms', async () => {
+    openStore.clearAll();
+    const hidden = (await json('POST', '/api/open/rooms', { title: 'hidden', visibility: 'unlisted' })).data.room_id;
+    await json('POST', `/api/open/rooms/${hidden}/join`, { handle: 'victim', party: 'human' });
+    await json('POST', `/api/open/rooms/${hidden}/join`, { handle: 'friend', party: 'human' });
+    await json('POST', `/api/open/rooms/${hidden}/post`, { handle: 'friend', body: 'hey @victim, plans attached', awaiting: ['victim'] });
+    const own = (await json('POST', '/api/open/rooms', { title: 'mine' })).data.room_id;
+    const imp = await json('POST', `/api/open/rooms/${own}/join`, { agent_id: 'victim', party: 'ai' });
+    assert.equal(imp.status, 200);
+    const auth = { Authorization: `Bearer ${imp.data.credential}` };
+    for (const path of ['/api/open/inbox', '/api/open/inbox?handle=victim', '/api/open/inbox?agent_id=victim']) {
+      const res = await json('GET', path, undefined, auth);
+      assert.equal(res.status, 200);
+      assert.equal(res.data.room_id, own);
+      assert.ok(res.data.items.every((i) => i.room_id === own), path);
+      assert.ok(!JSON.stringify(res.data).includes(hidden), path);
+    }
+  });
+
+  it('I-1: a credential sees only its own room, even for a real agent in several rooms', async () => {
+    openStore.clearAll();
+    const a = (await json('POST', '/api/open/rooms', { title: 'A' })).data.room_id;
+    const b = (await json('POST', '/api/open/rooms', { title: 'B' })).data.room_id;
+    const inA = await json('POST', `/api/open/rooms/${a}/join`, { agent_id: 'multi-bot', party: 'ai' });
+    await json('POST', `/api/open/rooms/${b}/join`, { agent_id: 'multi-bot', party: 'ai' });
+    for (const r of [a, b]) {
+      await json('POST', `/api/open/rooms/${r}/join`, { handle: 'jason', party: 'human' });
+      await json('POST', `/api/open/rooms/${r}/post`, { handle: 'jason', body: 'over to you', awaiting: ['multi-bot'] });
+    }
+    const res = await json('GET', '/api/open/inbox', undefined, { Authorization: `Bearer ${inA.data.credential}` });
+    assert.deepEqual(res.data.items.map((i) => i.room_id), [a]);
+    assert.equal(res.data.items[0].your_turn, true);
+    // A left agent's credential is revoked.
+    await json('POST', `/api/open/rooms/${a}/leave`, {}, { Authorization: `Bearer ${inA.data.credential}` });
+    const gone = await json('GET', '/api/open/inbox', undefined, { Authorization: `Bearer ${inA.data.credential}` });
+    assert.equal(gone.status, 401);
+  });
 });
