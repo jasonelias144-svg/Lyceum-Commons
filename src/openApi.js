@@ -418,7 +418,8 @@ router.get('/inbox', (req, res) => {
       // A room credential only proves presence in its own room. Anyone can mint one under any free
       // name in a room of their own, so a cross-room view would turn a name into that person's
       // rooms (QC I-1). MCP check_inbox is keyed per connector and keeps the cross-room view.
-      const items = openStore.inbox('ai', binding.agent_id).filter((i) => i.room_id === binding.room_id);
+      // Only that room is read, so other rooms cost nothing (R12-1).
+      const items = openStore.inbox('ai', binding.agent_id, { roomId: binding.room_id });
       return res.json({ agent_id: binding.agent_id, room_id: binding.room_id, items });
     }
     // Human names are declarations, not accounts, so a name alone cannot open an inbox: it would
