@@ -24,8 +24,34 @@ function perMinute() {
  */
 function clientIpHeader() {
   const raw = process.env.OPEN_CLIENT_IP_HEADER;
-  if (raw !== undefined && raw !== '') return raw.toLowerCase() === 'none' ? null : raw.toLowerCase();
+  if (raw !== undefined && raw !== '') {
+    const name = raw.trim().toLowerCase();
+    if (name === 'none') return null;
+    if (!KNOWN_HEADERS.has(name)) warnUnknownHeader(name);
+    return name;
+  }
   return process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_ENVIRONMENT_NAME ? 'x-real-ip' : null;
+}
+
+/**
+ * Client-address headers that real proxies set. A name outside this list is still used (a custom
+ * proxy may have its own), but it is likely a typo, and a header no request carries sends every
+ * post into the one shared fallback bucket, so the whole site would share one allowance.
+ */
+const KNOWN_HEADERS = new Set([
+  'x-real-ip', 'cf-connecting-ip', 'true-client-ip', 'fly-client-ip', 'x-client-ip',
+  'x-forwarded-for', 'x-cluster-client-ip', 'fastly-client-ip', 'x-azure-clientip',
+]);
+let warnedHeader = null;
+
+function warnUnknownHeader(name) {
+  if (warnedHeader === name) return;
+  warnedHeader = name;
+  console.warn(
+    `WARNING: OPEN_CLIENT_IP_HEADER is "${name}", which is not a header proxies usually set. ` +
+      'If no request carries it, every post shares ONE rate-limit allowance for the whole site. ' +
+      'Check the spelling, or set OPEN_CLIENT_IP_HEADER=none to use req.ip.'
+  );
 }
 
 const net = require('net');
@@ -43,8 +69,6 @@ function addressKey(raw) {
   if (net.isIPv4(value)) return value;
   const bare = value.split('%')[0];
   if (!net.isIPv6(bare)) return null;
-  const mapped = bare.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-  if (mapped) return mapped[1];
   let a = bare.toLowerCase();
   const tail4 = a.match(/^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
   if (tail4) {
@@ -60,7 +84,12 @@ function addressKey(raw) {
   } else {
     groups = a.split(':');
   }
-  return `${groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(':')}::/64`;
+  const words = groups.map((g) => parseInt(g, 16));
+  // IPv4-mapped (::ffff:0:0/96) in any spelling, dotted or hex, counts as its IPv4.
+  if (words.slice(0, 5).every((w) => w === 0) && words[5] === 0xffff) {
+    return [words[6] >> 8, words[6] & 255, words[7] >> 8, words[7] & 255].join('.');
+  }
+  return `${words.slice(0, 4).map((w) => w.toString(16)).join(':')}::/64`;
 }
 
 const loggedStates = new Set();
@@ -84,6 +113,7 @@ function clientKey(req) {
   if (name) {
     const raw = req.get(name);
     if (raw === undefined || String(raw).trim() === '') {
+      if (!KNOWN_HEADERS.has(name)) warnUnknownHeader(name);
       logState(`a shared fallback bucket (${name} missing)`);
       return FALLBACK_KEY;
     }
@@ -141,6 +171,7 @@ function prune(t, limit, msPerPost) {
 function _reset() {
   buckets.clear();
   loggedStates.clear();
+  warnedHeader = null;
   clock = () => Date.now();
 }
 
@@ -148,4 +179,7 @@ function _setClock(fn) {
   clock = fn;
 }
 
-module.exports = { takePost, clientKey, clientIpHeader, addressKey, FALLBACK_KEY, DEFAULT_PER_MIN, _reset, _setClock, _buckets: buckets };
+// Check the configured header at startup, so a typo warns in the boot log before the first post.
+clientIpHeader();
+
+module.exports = { takePost, clientKey, clientIpHeader, addressKey, FALLBACK_KEY, KNOWN_HEADERS, DEFAULT_PER_MIN, _reset, _setClock, _buckets: buckets };
