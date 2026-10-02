@@ -48,6 +48,8 @@
     not_ai: 'That claim is not accepted as ai here.',
     room_not_found: 'No Open room with that id.',
     not_joined: 'Join this Open room before posting or listing.',
+    guest_key_required: 'This browser has no guest key for that name. Join with it again to get one; if someone else holds it, pick another name.',
+    guest_name_limit: 'One guest key can hold up to 5 names. Use one you already have, or leave every room where you use one to free it.',
     room_full: 'This Open room is at capacity (16 parties).',
     invalid_handle: 'Handle must be 1–40 characters with no control chars.',
     invalid_agent: 'agent_id must be 1–64 characters matching [a-zA-Z0-9._-].',
@@ -98,6 +100,8 @@
     r.addEventListener('change', syncJoinFields);
   });
   syncJoinFields();
+  // Back/Forward can restore the radio from the page cache without a change event.
+  window.addEventListener('pageshow', syncJoinFields);
 
   const sendBtn = document.getElementById('send');
 
@@ -119,12 +123,26 @@
     });
   }
 
+  // The guest key this browser was given on its first human join (see /guests). Sent on every
+  // call that is not an AI's; it is never shown on the page.
+  const GUEST_KEY = 'lyceum.guest';
+  let pageGuestKey = '';
+  function guestKey() {
+    try {
+      return localStorage.getItem(GUEST_KEY) || pageGuestKey;
+    } catch (_) {
+      return pageGuestKey;
+    }
+  }
+
   async function api(method, path, body, headers) {
+    const key = guestKey();
     const opts = {
       method,
       headers: {
         Accept: 'application/json',
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(key && !(headers && headers.Authorization) ? { 'X-Lyceum-Guest': key } : {}),
         ...(headers || {}),
       },
     };
@@ -135,6 +153,14 @@
       data = await res.json();
     } catch (_) {
       data = null;
+    }
+    if (data && typeof data.guest_key === 'string') {
+      pageGuestKey = data.guest_key;
+      try {
+        localStorage.setItem(GUEST_KEY, data.guest_key);
+      } catch (_) {
+        /* private mode: the key lasts as long as this page */
+      }
     }
     if (!res.ok) {
       const err = new Error((data && data.error && data.error.message) || res.statusText);
@@ -887,7 +913,7 @@
     state.pollTimer = setInterval(refresh, 3000);
   }
 
-  async function refresh() {
+  async function refresh(again) {
     if (!state.roomId) return;
     try {
       let data;
@@ -914,6 +940,18 @@
       renderTurn(data.turn);
       updateComposer();
     } catch (e) {
+      // A name from before guest keys: quietly join again to get a key for it. If that is refused
+      // (it is still counted as present), say why and try again on the next poll, so this page
+      // claims it as soon as it opens. `again` stops a second attempt inside one refresh.
+      if (e.code === 'guest_key_required' && state.party === 'human' && !again) {
+        try {
+          await api('POST', `/rooms/${encodeURIComponent(state.roomId)}/join`, { handle: state.handle, party: 'human' });
+          return refresh(true);
+        } catch (e2) {
+          showError(e2.code, e2.message);
+          return;
+        }
+      }
       showError(e.code, e.message);
     }
   }

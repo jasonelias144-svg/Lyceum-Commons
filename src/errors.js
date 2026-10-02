@@ -9,7 +9,15 @@ const CODES = {
   invalid_handle: { status: 400, message: 'Handle must be 1–40 characters with no control or invisible characters.' },
   invalid_agent: { status: 400, message: 'agent_id must be 1–64 characters matching [a-zA-Z0-9._-].' },
   invalid_credential: { status: 401, message: 'Missing or invalid Bearer credential for this room session.' },
+  guest_key_required: {
+    status: 401,
+    message: 'Acting as a human name needs the guest key that holds it, sent as X-Lyceum-Guest. The browser that joined sends it for you.',
+  },
   handle_taken: { status: 409, message: 'That name, or one that looks the same, is already in use in this room.' },
+  guest_name_limit: {
+    status: 403,
+    message: 'One guest key can hold up to 5 names. Use a name you already have, or leave every room where you use one to free it.',
+  },
   invalid_body: { status: 400, message: 'Message body must be plain text within the room format limit.' },
   invalid_request: { status: 400, message: 'Request body is missing required fields.' },
   invalid_signature: {

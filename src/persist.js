@@ -1,5 +1,5 @@
 /**
- * Snapshot persistence — keeps Human rooms and guest book, and Open rooms, rosters,
+ * Snapshot persistence — keeps Human rooms and guest book, and Open rooms, rosters, guest-key hashes,
  * credentials and webhooks across restarts by writing them to one JSON file.
  * The AI stream is NOT in this file: it has its own store (src/aiStore.js, AI_STORE_PATH).
  * `readLegacyAi()` only reads the AI section older snapshots carried, so aiStore can
@@ -59,6 +59,7 @@ function serialize() {
     open: {
       rooms: roomsOut(openStore._openRooms),
       credentials: Array.from(openStore._credentials.entries()),
+      guests: Array.from(openStore._guests.entries()),
       webhooks: Array.from(notify._subscriptions.values()).map((s) => ({ ...s, sent: [] })),
     },
   };
@@ -73,6 +74,7 @@ function restore(snap) {
   store._setGuestbook((snap.human && snap.human.guestbook) || []);
   roomsIn(openStore._openRooms, snap.open && snap.open.rooms);
   mapIn(openStore._credentials, snap.open && snap.open.credentials);
+  mapIn(openStore._guests, snap.open && snap.open.guests);
   notify.restoreSubscriptions(snap.open && snap.open.webhooks);
   store.ensureSeededRooms();
   openStore.ensureWelcomeLobby();

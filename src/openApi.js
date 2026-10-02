@@ -5,6 +5,8 @@
  *
  * Verbs: create · join · post · list · leave (+ heartbeat)
  * Server forces party from authenticated join kind on post.
+ * Humans are guests: a keyless human join returns a guest_key once, and every call made as
+ * that name must send it as X-Lyceum-Guest (see /guests for the promise this implements).
  * Presence: parties idle past OPEN_PRESENCE_TTL_MS (default 10 min) drop off the roster
  * lazily; any authenticated call, reading messages or POST /rooms/:id/heartbeat keeps them.
  */
@@ -41,6 +43,15 @@ function takePost(req, res) {
 
 /** How long an inbox may wait for boot indexing before answering "try again shortly". */
 const INBOX_WAIT_MS = 10000;
+
+/** Right after a restart, older messages are still being indexed (R12-1b). Wait for that rather
+ * than build them all here, which would hold up every other request; 503 warming_up after 10 s. */
+async function waitForMentions(res) {
+  if (!(await openStore.mentionsReady(INBOX_WAIT_MS))) {
+    res.set('Retry-After', '5');
+    throw protocolError('warming_up');
+  }
+}
 
 const HANDLE_RE = /^[^\x00-\x1f\x7f]{1,40}$/;
 const AGENT_RE = /^[a-zA-Z0-9._-]{1,64}$/;
@@ -136,6 +147,30 @@ function requireAiCredential(req, roomId) {
   return { room, agent_id: binding.agent_id, binding, token };
 }
 
+/** The guest id behind this request's X-Lyceum-Guest header, or null. */
+function guestOf(req) {
+  return openStore.resolveGuest(req.headers['x-lyceum-guest']);
+}
+
+function requireGuest(req) {
+  const gid = guestOf(req);
+  if (!gid) throw protocolError('guest_key_required');
+  return gid;
+}
+
+/**
+ * Acting as a human name in a room: the name must be present (or, with present: false, still a
+ * member), and the request must carry the guest key that holds it. A name that isn't joined is
+ * not_joined, as before; no key is guest_key_required; someone else's key is not_joined.
+ */
+function requireOwnHandle(req, room, handle, { present = true } = {}) {
+  const joined = present ? openStore.hasHuman(room, handle) : openStore.isMember(room, 'human', handle);
+  if (!joined) throw protocolError('not_joined');
+  const gid = requireGuest(req);
+  if (!openStore.ownsHuman(room, handle, gid)) throw protocolError('not_joined');
+  return gid;
+}
+
 /**
  * Join body: party must be human|ai; identity must match party shape.
  * Cross-pose → invalid_party (also not_human / not_ai when shape is clearly wrong).
@@ -208,9 +243,11 @@ router.post('/rooms/:id/join', (req, res) => {
     const identity = parseJoinIdentity(req);
 
     if (identity.kind === 'human') {
-      openStore.joinHuman(room, identity.handle);
+      const { guest_key: guestKey } = openStore.joinHuman(room, identity.handle, guestOf(req));
       return res.json({
         ...roomMeta(room),
+        // Only on the join that minted it; never again.
+        ...(guestKey ? { guest_key: guestKey } : {}),
         roster: openStore.listRoster(room),
       });
     }
@@ -233,7 +270,7 @@ router.post('/rooms/:id/join', (req, res) => {
 
 /**
  * POST /rooms/:id/post
- * human: { handle, body } → party forced "human"
+ * human: X-Lyceum-Guest; { handle, body } → party forced "human"
  * ai: Authorization: Bearer; { body } → party forced "ai"
  */
 router.post('/rooms/:id/post', (req, res) => {
@@ -274,9 +311,7 @@ router.post('/rooms/:id/post', (req, res) => {
     }
     const room = requireRoom(roomId);
     const handle = validateHandle(rawHandle);
-    if (!openStore.hasHuman(room, handle)) {
-      throw protocolError('not_joined');
-    }
+    requireOwnHandle(req, room, handle);
     author = handle;
     forcedParty = 'human';
     const body = validateBody(rawBody);
@@ -292,7 +327,7 @@ router.post('/rooms/:id/post', (req, res) => {
 
 /**
  * GET /rooms/:id/messages
- * human: ?handle=
+ * human: X-Lyceum-Guest; ?handle=
  * ai: Authorization: Bearer ; ?after=
  */
 router.get('/rooms/:id/messages', (req, res) => {
@@ -313,9 +348,7 @@ router.get('/rooms/:id/messages', (req, res) => {
       }
       // Trimmed like every other handle (join, post, heartbeat).
       resolvedHandle = String(raw).trim();
-      if (!openStore.hasHuman(room, resolvedHandle)) {
-        throw protocolError('not_joined');
-      }
+      requireOwnHandle(req, room, resolvedHandle);
     }
 
     if (bearer) {
@@ -341,7 +374,7 @@ router.get('/rooms/:id/messages', (req, res) => {
 
 /**
  * POST /rooms/:id/leave
- * human: { handle }
+ * human: X-Lyceum-Guest; { handle }
  * ai: Authorization: Bearer
  */
 router.post('/rooms/:id/leave', (req, res) => {
@@ -371,8 +404,10 @@ router.post('/rooms/:id/leave', (req, res) => {
     }
     const room = requireRoom(roomId);
     const handle = validateHandle(rawHandle);
-    // A handle that is neither present nor a member is refused before anything changes: no
-    // roster in the reply (strangers cannot read last_seen) and the room is never deleted.
+    // A handle that is neither present nor a member, or a request without the guest key that
+    // holds it, is refused before anything changes: no roster in the reply (strangers cannot
+    // read last_seen) and the room is never deleted.
+    requireOwnHandle(req, room, handle, { present: false });
     if (!openStore.leaveHuman(room, handle)) throw protocolError('not_joined');
     const still = openStore.getRoom(roomId);
     res.json({
@@ -388,7 +423,7 @@ router.post('/rooms/:id/leave', (req, res) => {
 
 /**
  * POST /rooms/:id/heartbeat
- * human: { handle }
+ * human: X-Lyceum-Guest; { handle }
  * ai: Authorization: Bearer
  * Keeps a quiet participant on the roster (refreshes last_seen) without reading or posting.
  * Idle past presence_ttl_ms, a participant drops off the roster and must join again.
@@ -409,7 +444,7 @@ router.post('/rooms/:id/heartbeat', (req, res) => {
       }
       room = requireRoom(roomId);
       const handle = validateHandle(bodyIn.handle);
-      if (!openStore.hasHuman(room, handle)) throw protocolError('not_joined');
+      requireOwnHandle(req, room, handle);
       openStore.touch(room, 'human', handle);
     }
     res.json({
@@ -424,8 +459,10 @@ router.post('/rooms/:id/heartbeat', (req, res) => {
 });
 
 /**
- * GET /inbox  Authorization: Bearer (ai room credential). The human ?handle= form is off until guest keys (#33).
- * The credential's own room only: whether its turn awaits you, it mentions you, or it has unread messages.
+ * GET /inbox  human: X-Lyceum-Guest (every room where this guest holds a name; each item says
+ * which `handle`)  or  Authorization: Bearer (ai: the credential's own room only).
+ * Rooms whose turn awaits you, rooms mentioning you, rooms you belong to with unread messages.
+ * A ?handle= alone no longer reads anyone's inbox.
  */
 router.get('/inbox', async (req, res) => {
   try {
@@ -433,26 +470,18 @@ router.get('/inbox', async (req, res) => {
     if (bearer) {
       const binding = openStore.authenticate(bearer);
       if (!binding) throw protocolError('invalid_credential');
-      // Right after a restart, older messages are still being indexed (R12-1b). Wait for that
-      // rather than build them all here, which would hold up every other request.
-      if (!(await openStore.mentionsReady(INBOX_WAIT_MS))) {
-        res.set('Retry-After', '5');
-        throw protocolError('warming_up');
-      }
       // A room credential only proves presence in its own room. Anyone can mint one under any free
       // name in a room of their own, so a cross-room view would turn a name into that person's
       // rooms (QC I-1). MCP check_inbox is keyed per connector and keeps the cross-room view.
       // Only that room is read, so other rooms cost nothing (R12-1).
+      await waitForMentions(res);
       const items = openStore.inbox('ai', binding.agent_id, { roomId: binding.room_id });
       return res.json({ agent_id: binding.agent_id, room_id: binding.room_id, items });
     }
-    // Human names are declarations, not accounts, so a name alone cannot open an inbox: it would
-    // tell anyone which rooms (including unlisted ones) a person is in. Humans get an inbox back
-    // when guest keys land (#33).
-    throw protocolError(
-      'invalid_credential',
-      'The inbox needs a key. AIs: send your room credential as Authorization: Bearer. People: an inbox by name is turned off until guest keys arrive, because a name alone is not proof of who you are.'
-    );
+    // A name alone is not proof of who you are, so people read their inbox with their guest key.
+    const gid = requireGuest(req);
+    await waitForMentions(res);
+    res.json({ items: openStore.guestInbox(gid) });
   } catch (err) {
     sendError(res, err);
   }
@@ -460,7 +489,7 @@ router.get('/inbox', async (req, res) => {
 
 /**
  * POST /rooms/:id/state
- * human: { handle, state?, awaiting?, note? }; ai: Authorization: Bearer; { state?, awaiting?, note? }
+ * human: X-Lyceum-Guest; { handle, state?, awaiting?, note? }; ai: Authorization: Bearer; { state?, awaiting?, note? }
  * Hand the turn, reopen, complete, or let the room rest as dormant — without posting.
  */
 router.post('/rooms/:id/state', (req, res) => {
@@ -474,7 +503,7 @@ router.post('/rooms/:id/state', (req, res) => {
     } else {
       room = requireRoom(roomId);
       by = validateHandle(bodyIn.handle);
-      if (!openStore.hasHuman(room, by)) throw protocolError('not_joined');
+      requireOwnHandle(req, room, by);
       openStore.touch(room, 'human', by);
     }
     const { awaiting, state } = validateTurnFields(bodyIn, openStore.TURN_STATES);
@@ -493,7 +522,7 @@ router.post('/rooms/:id/state', (req, res) => {
 });
 
 /**
- * POST /rooms/:id/settings  human: { handle, title?, visibility? }  ai: Authorization: Bearer
+ * POST /rooms/:id/settings  human: X-Lyceum-Guest; { handle, title?, visibility? }  ai: Authorization: Bearer
  * Rename a room or make it listed / unlisted (members only).
  */
 router.post('/rooms/:id/settings', (req, res) => {
@@ -506,7 +535,7 @@ router.post('/rooms/:id/settings', (req, res) => {
     } else {
       room = requireRoom(roomId);
       const handle = validateHandle(bodyIn.handle);
-      if (!openStore.hasHuman(room, handle)) throw protocolError('not_joined');
+      requireOwnHandle(req, room, handle);
       openStore.touch(room, 'human', handle);
     }
     const { title, visibility } = bodyIn;
@@ -526,7 +555,8 @@ router.post('/rooms/:id/settings', (req, res) => {
 /**
  * Who is registering a notification, and for which room. Subscriptions belong to one room and
  * need that name present in it now (notify checks). An AI's Bearer is already room-scoped, so
- * its room is the credential's room; a different room_id in the body is refused.
+ * its room is the credential's room; a different room_id in the body is refused. A human needs
+ * the guest key that holds the name in that room.
  */
 function notificationOwner(req, bodyIn) {
   const bearer = extractBearer(req);
@@ -538,11 +568,15 @@ function notificationOwner(req, bodyIn) {
     }
     return { party: 'ai', who: binding.agent_id, room_id: binding.room_id };
   }
-  return { party: 'human', who: validateHandle(bodyIn.handle), room_id: bodyIn.room_id };
+  const who = validateHandle(bodyIn.handle);
+  const owner = requireGuest(req);
+  const room = typeof bodyIn.room_id === 'string' && bodyIn.room_id ? openStore.getRoom(bodyIn.room_id) : null;
+  if (room && !openStore.holdsIn(room, owner, who)) throw protocolError('not_joined');
+  return { party: 'human', who, owner, room_id: bodyIn.room_id };
 }
 
 /**
- * POST /notifications  { room_id, handle, url, events? }  (human)  or  Authorization: Bearer (ai)
+ * POST /notifications  human: X-Lyceum-Guest; { room_id, handle, url, events? }  ai: Authorization: Bearer
  * Register a webhook for yourself in one room you are in now. Returns { id, secret } — keep the
  * secret: it signs every delivery and is what a human needs to remove the webhook later.
  * Leaving the room removes it.
@@ -588,7 +622,7 @@ router.get('/push/key', (_req, res) => {
 });
 
 /**
- * POST /push/subscribe  human: { room_id, handle, subscription, events? }  ai: Authorization: Bearer
+ * POST /push/subscribe  human: X-Lyceum-Guest; { room_id, handle, subscription, events? }  ai: Authorization: Bearer
  * Store this device's PushSubscription for one room you are in now. Returns { id, secret };
  * remove it with DELETE /notifications/:id { secret }. Leaving the room removes it.
  */
