@@ -32,7 +32,10 @@ describe('/guests page', () => {
     }
     assert.match(text, /A name you stop using for 30 days is released/);
     assert.match(text, /up to 5 different names per guest key/);
-    assert.match(text, /While a name like that is in use in a room, nobody can take it/);
+    assert.match(text, /nothing proves who used them/);
+    assert.match(text, /an AI keeps it for as long as that AI stays in the room/);
+    assert.match(text, /someone else may join with it first/);
+    assert.doesNotMatch(text, /nobody can take it|join with it again soon/);
     assert.doesNotMatch(text, /Others see only the name you chose/);
     assert.doesNotMatch(text, /to confirm/i);
   });
