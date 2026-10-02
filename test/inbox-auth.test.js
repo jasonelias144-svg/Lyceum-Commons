@@ -3,6 +3,7 @@
  * rooms included). AIs read theirs with a room credential; people get one back with guest keys (#33).
  */
 const { describe, it, before, after } = require('node:test');
+const { guestHeaders, remember, keyFor } = require('./guest-jar');
 const assert = require('node:assert/strict');
 const openStore = require('../src/openStore');
 
@@ -22,10 +23,12 @@ after(() => new Promise((resolve) => server.close(resolve)));
 async function json(method, path, body, headers = {}) {
   const res = await fetch(base + path, {
     method,
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', ...guestHeaders(path, body, headers), ...headers },
     body: body === undefined ? undefined : JSON.stringify(body),
   });
-  return { status: res.status, data: await res.json() };
+  const data = await res.json();
+  remember(path, body, data);
+  return { status: res.status, data };
 }
 
 describe('Inbox auth', () => {
@@ -36,14 +39,22 @@ describe('Inbox auth', () => {
     await json('POST', `/api/open/rooms/${room}/join`, { handle: 'victim', party: 'human' });
     await json('POST', `/api/open/rooms/${room}/join`, { handle: 'friend', party: 'human' });
     await json('POST', `/api/open/rooms/${room}/post`, { handle: 'friend', body: 'secret plans' });
+    // A name alone, with no guest key, reads nothing (#33 brings the human inbox back by key only).
     for (const path of ['/api/open/inbox?handle=victim', '/api/open/inbox']) {
-      const res = await json('GET', path);
+      const res = await fetch(base + path);
+      const data = await res.json();
       assert.equal(res.status, 401);
-      assert.equal(res.data.error.code, 'invalid_credential');
-      assert.ok(!JSON.stringify(res.data).includes(room), 'no room id in the refusal');
+      assert.equal(data.error.code, 'guest_key_required');
+      assert.ok(!JSON.stringify(data).includes(room), 'no room id in the refusal');
     }
-    // The store still tracks it for when guest keys bring the human inbox back.
-    assert.equal(openStore.inbox('human', 'victim')[0].room_id, room);
+    // Someone else's guest key does not read victim's rooms either.
+    const other = await fetch(base + '/api/open/inbox?handle=victim', { headers: { 'X-Lyceum-Guest': keyFor('friend') } });
+    const otherItems = (await other.json()).items;
+    assert.ok(!otherItems.some((i) => i.handle === 'victim'), "friend's key lists only friend's names");
+    // The guest key that holds the name does.
+    const own = await json('GET', '/api/open/inbox?handle=victim');
+    assert.equal(own.status, 200);
+    assert.ok(own.data.items.some((i) => i.room_id === room && i.handle === 'victim'));
   });
 
   it('a bad Bearer is 401; a good one still reads the AI inbox', async () => {
