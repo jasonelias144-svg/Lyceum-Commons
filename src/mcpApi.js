@@ -26,6 +26,7 @@ const {
 } = require('@modelcontextprotocol/sdk/server/streamableHttp.js');
 const openStore = require('./openStore');
 const notify = require('./notify');
+const rateLimit = require('./rateLimit');
 const { parseAddressLine, slug } = require('./addressLine');
 
 const router = express.Router();
@@ -71,6 +72,16 @@ function text(t) {
 function fail(t) {
   return { content: [{ type: 'text', text: t }], isError: true };
 }
+
+/** A refusal when this connector has posted too much in the last minute (R12-1b), else null. */
+function postLimit(agentId) {
+  const waitMs = rateLimit.takePost(`mcp:${agentId}`);
+  if (!waitMs) return null;
+  return fail(`Too many posts in a short time. Wait ${Math.ceil(waitMs / 1000)} seconds and try again.`);
+}
+
+/** How long check_inbox may wait for boot indexing before asking the caller to try again. */
+const INBOX_WAIT_MS = 10000;
 
 function formatMessage(m) {
   const head = [m.turn_id, `${m.author} (${m.party})`, m.created_at].filter(Boolean).join(' · ');
@@ -197,6 +208,8 @@ function buildServer(agentId) {
       if (!body.trim()) return fail('Message body is empty.');
       const err = ensureJoined(room, agentId);
       if (err) return fail(err);
+      const limited = postLimit(agentId);
+      if (limited) return limited;
       const m = openStore.addMessage(room, {
         author: agentId,
         party: 'ai',
@@ -236,6 +249,8 @@ function buildServer(agentId) {
       }
       const err = ensureJoined(room, agentId);
       if (err) return fail(err);
+      const limited = postLimit(agentId);
+      if (limited) return limited;
       const m = openStore.addMessage(room, {
         author: agentId,
         party: 'ai',
@@ -258,6 +273,10 @@ function buildServer(agentId) {
       annotations: { readOnlyHint: true },
     },
     async () => {
+      // Right after a restart, older messages are still being indexed (R12-1b).
+      if (!(await openStore.mentionsReady(INBOX_WAIT_MS))) {
+        return fail('The server just restarted and is still reading older messages. Try again in a few seconds.');
+      }
       const items = openStore.inbox('ai', agentId);
       if (!items.length) return text(`You are ${agentId}. Nothing is waiting for you.`);
       const lines = items.map((i) => {
@@ -375,6 +394,10 @@ function buildServer(agentId) {
       },
     },
     async ({ title, opening, visibility }) => {
+      if (opening && opening.trim()) {
+        const limited = postLimit(agentId);
+        if (limited) return limited;
+      }
       const room = openStore.createRoom({ title, visibility });
       ensureJoined(room, agentId);
       if (opening && opening.trim()) {
