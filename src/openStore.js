@@ -284,6 +284,10 @@ const MAX_NAME_KEY = 64;
 const MENTION_SPAN = 64;
 /** Only the first this-many @s in a message are read as mentions (bounds the work per post). */
 const MAX_MENTIONS_SCANNED = 64;
+/** Per @, at most this many places where the name could end are tried (R12: bounds the folding work). */
+const MAX_ENDINGS_PER_MENTION = 16;
+/** Per message, at most this many candidate names are folded in total (R12-1, R12-2). */
+const MAX_CANDIDATES = 256;
 const NAME_CHAR = /[\p{L}\p{N}\p{M}_-]/u;
 const NAME_START = /[\p{L}\p{N}\p{M}_]/u;
 const NO_MENTIONS = new Float64Array(0);
@@ -291,6 +295,8 @@ const NO_MENTIONS = new Float64Array(0);
 const mentionIndexes = new WeakMap();
 let lastBody = null;
 let lastIndex = NO_MENTIONS;
+let lastWho = null;
+let lastWhoHash = null;
 
 /** A 53-bit hash of a folded name (two 32-bit multiply-xor hashes), so the index stores numbers, not text. */
 function keyHash(k) {
@@ -317,26 +323,32 @@ function keyHash(k) {
  * mark in any script, `_` or `-`, nor a `.` followed by one. So `@ada` does not mention
  * `ada-bot`, `ada.bot` or `adaïs`, but `thanks @ada.` does. Only the first 64 @s are read.
  *
- * Bounds (R8e-1): a candidate stops growing once its folded form is longer than any name can
- * be (MAX_NAME_KEY), and only hashes are kept, so a message's index is at most 64 × 64 numbers
- * however the text expands when folded.
+ * Bounds (R8e-1, R12): a candidate stops growing once its folded form is longer than any name can
+ * be (MAX_NAME_KEY). Each @ tries at most 16 places where the name could end, and a message
+ * folds at most 256 candidates in all, so building one index costs a few milliseconds at worst
+ * and holds at most 256 numbers, however the text is crafted.
  */
 function buildMentionIndex(body) {
   if (typeof body !== 'string' || !body.includes('@')) return NO_MENTIONS;
   const hashes = [];
   const text = Array.from(body.replace(/`[^`\n]*`/g, ' '));
+  let budget = MAX_CANDIDATES;
+  let endings = 0;
   const add = (i, j) => {
+    budget--;
+    endings++;
     const k = nameKey(text.slice(i + 1, j).join(''));
     if (Array.from(k).length > MAX_NAME_KEY) return false;
     if (k) hashes.push(keyHash(k));
     return true;
   };
   let scanned = 0;
-  for (let i = 0; i < text.length && scanned < MAX_MENTIONS_SCANNED; i++) {
+  for (let i = 0; i < text.length && scanned < MAX_MENTIONS_SCANNED && budget > 0; i++) {
     if (text[i] !== '@') continue;
     if (i > 0 && (NAME_CHAR.test(text[i - 1]) || text[i - 1] === '/' || text[i - 1] === '@')) continue;
     if (!NAME_START.test(text[i + 1] || '')) continue;
     scanned++;
+    endings = 0;
     const stop = Math.min(text.length, i + 1 + MENTION_SPAN);
     for (let j = i + 2; j <= stop; j++) {
       if (j < text.length) {
@@ -348,12 +360,28 @@ function buildMentionIndex(body) {
         if (NAME_CHAR.test(c) || (c === '.' && NAME_CHAR.test(text[j + 1] || ''))) continue;
       }
       // Folding never makes a longer candidate shorter, so once one is too long, stop.
-      if (!add(i, j)) break;
+      if (!add(i, j) || endings >= MAX_ENDINGS_PER_MENTION || budget <= 0) break;
     }
   }
   if (!hashes.length) return NO_MENTIONS;
   const sorted = Float64Array.from(new Set(hashes)).sort();
   return sorted;
+}
+
+/**
+ * Build the mention index of every message in the store (R12-1). Indexes live only in memory,
+ * so a restore calls this before the server listens; otherwise the first inbox after a restart
+ * would build them all at once while every request waits.
+ */
+function indexAllMentions() {
+  let n = 0;
+  for (const room of openRooms.values()) {
+    for (const m of room.messages) {
+      mentionIndex(m);
+      n++;
+    }
+  }
+  return n;
 }
 
 /** The mention index for a message object (kept with the message) or a body string. */
@@ -379,10 +407,15 @@ function mentionIndex(messageOrBody) {
  * (see buildMentionIndex).
  */
 function mentionsName(messageOrBody, who) {
-  const target = nameKey(who);
-  if (!target || Array.from(target).length > MAX_NAME_KEY) return false;
+  // The same name is usually checked against many messages in a row (inbox), so fold it once.
+  if (who !== lastWho) {
+    const target = nameKey(who);
+    lastWhoHash = !target || Array.from(target).length > MAX_NAME_KEY ? null : keyHash(target);
+    lastWho = who;
+  }
+  const h = lastWhoHash;
+  if (h === null) return false;
   const idx = mentionIndex(messageOrBody);
-  const h = keyHash(target);
   let lo = 0;
   let hi = idx.length - 1;
   while (lo <= hi) {
@@ -599,10 +632,11 @@ function markSeen(room, party, id) {
  * What is waiting for a participant across all rooms: rooms whose turn awaits
  * them, and rooms they belong to (or are mentioned in) with unread messages.
  */
-function inbox(party, id) {
+function inbox(party, id, { roomId } = {}) {
   const key = rosterKey(party, id);
   const items = [];
-  for (const room of openRooms.values()) {
+  const rooms = roomId === undefined ? openRooms.values() : [openRooms.get(roomId)].filter(Boolean);
+  for (const room of rooms) {
     sweep(room);
     const turn = turnOf(room);
     const seenId = room.seen[key];
@@ -941,7 +975,10 @@ module.exports = {
   sameId,
   mentionsName,
   MAX_MENTIONS_SCANNED,
+  MAX_ENDINGS_PER_MENTION,
+  MAX_CANDIDATES,
   MAX_NAME_KEY,
+  indexAllMentions,
   awaits,
   MAX_PARTIES,
   OPEN_WELCOME_ROOM_ID,
