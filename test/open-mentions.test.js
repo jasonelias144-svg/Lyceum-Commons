@@ -182,28 +182,49 @@ describe('Names and @mentions (8d, 8e, R8e-1)', () => {
     assert.equal(openStore.mentionsName('hi @ana, @bob and @Mary Ann!', 'mary ann'), true);
   });
 
-  it('R12-1: after a restart, the first inbox is fast and mentions still work', async () => {
+  it('R12-1, R12-1b: after a restart the server answers while it indexes, and the inbox is right', async () => {
     const room = await newRoom();
     await joinHuman(room, 'x');
     const r = openStore._openRooms.get(room);
     for (let u = 1; u <= 300; u++) openStore.addMessage(r, { author: 'x', party: 'human', body: crafted(u) });
     openStore.addMessage(r, { author: 'x', party: 'human', body: 'over to you @ana' });
     const snap = JSON.parse(JSON.stringify(persist.serialize()));
-    persist.restore(snap); // what boot does, before the server listens
+    persist.restore(snap); // what boot does; indexing then runs in slices after listen
+    assert.equal(openStore.mentionsIndexing(), true);
+    // Other requests are answered while the index is built: no request waits on a long stretch.
+    let worst = 0;
+    let served = 0;
+    while (openStore.mentionsIndexing()) {
+      const t0 = Date.now();
+      const res = await fetch(`${base}/api/open/agents`);
+      assert.equal(res.status, 200);
+      worst = Math.max(worst, Date.now() - t0);
+      served++;
+    }
+    assert.ok(served > 1, `only ${served} request was served while indexing`);
+    assert.ok(worst < 100, `a request waited ${worst} ms while indexing`);
     let t0 = Date.now();
     const items = openStore.inbox('ai', 'fresh-bot');
     assert.equal(items.length, 0);
-    assert.ok(Date.now() - t0 < 250, `first inbox after restart took ${Date.now() - t0} ms`);
-    t0 = Date.now();
+    assert.ok(Date.now() - t0 < 250, `first inbox after indexing took ${Date.now() - t0} ms`);
     const ana = openStore.inbox('human', 'ana').find((i) => i.room_id === room);
-    assert.ok(Date.now() - t0 < 250, `inbox took ${Date.now() - t0} ms`);
     assert.equal(ana.mentions, 1);
-    // An AI's REST inbox reads only its own room, so other rooms' messages cost it nothing.
-    const other = await newRoom();
-    const join = await json('POST', `/api/open/rooms/${other}/join`, { agent_id: 'fresh-bot', party: 'ai' });
-    t0 = Date.now();
+  });
+
+  it('R12-1b: an inbox asked for during indexing waits for it and is correct', async () => {
+    const room = await newRoom();
+    await joinHuman(room, 'x');
+    const join = await json('POST', `/api/open/rooms/${room}/join`, { agent_id: 'ana-bot', party: 'ai' });
+    const r = openStore._openRooms.get(room);
+    for (let u = 1; u <= 150; u++) openStore.addMessage(r, { author: 'x', party: 'human', body: crafted(u) });
+    openStore.addMessage(r, { author: 'x', party: 'human', body: 'over to you @ana-bot' });
+    persist.restore(JSON.parse(JSON.stringify(persist.serialize())));
+    assert.equal(openStore.mentionsIndexing(), true);
     const res = await fetch(`${base}/api/open/inbox`, { headers: { Authorization: `Bearer ${join.data.credential}` } });
     assert.equal(res.status, 200);
-    assert.ok(Date.now() - t0 < 250, `REST inbox took ${Date.now() - t0} ms`);
+    assert.equal(openStore.mentionsIndexing(), false);
+    const item = (await res.json()).items.find((i) => i.room_id === room);
+    assert.equal(item.mentions, 1);
+    assert.equal(item.unread, 151);
   });
 });
