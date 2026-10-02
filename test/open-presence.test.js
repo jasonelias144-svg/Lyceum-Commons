@@ -9,6 +9,9 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const openStore = require('../src/openStore');
+
+/** The human inbox is off over HTTP until guest keys (#33); its logic is still checked at store level. */
+const humanInbox = (handle) => ({ data: { items: openStore.inbox('human', handle) } });
 const notify = require('../src/notify');
 const persist = require('../src/persist');
 
@@ -111,7 +114,7 @@ describe('Awaiting self-heals', () => {
     const read = await json('GET', '/api/open/rooms/open-welcome/messages?handle=jason');
     assert.equal(read.data.turn.state, 'open');
     assert.deepEqual(read.data.turn.awaiting, []);
-    const inbox = await json('GET', '/api/open/inbox?handle=qc-tester-h5');
+    const inbox = humanInbox('qc-tester-h5');
     assert.equal(inbox.data.items.length, 0);
   });
 
@@ -335,7 +338,7 @@ describe('Handoff 7 fixes', () => {
     const sub = await json('POST', '/api/open/push/subscribe', { room_id: room, handle: 'qa-c', subscription, events: ['message'] });
     assert.equal(sub.status, 201);
     await json('POST', `/api/open/rooms/${room}/post`, { handle: 'qa-a', body: 'news' });
-    let inbox = await json('GET', '/api/open/inbox?handle=qa-c');
+    let inbox = humanInbox('qa-c');
     assert.equal(inbox.data.items.length, 1);
     assert.equal(inbox.data.items[0].unread, 1);
 
@@ -349,7 +352,7 @@ describe('Handoff 7 fixes', () => {
     assert.equal(openStore.isMember(r, 'human', 'qa-c'), true);
 
     await json('POST', `/api/open/rooms/${room}/post`, { handle: 'qa-a', body: 'more news' });
-    inbox = await json('GET', '/api/open/inbox?handle=qa-c');
+    inbox = humanInbox('qa-c');
     assert.equal(inbox.data.items.length, 1);
     assert.equal(inbox.data.items[0].unread, 2);
     // `message` push still reaches the expired member (first post + this one).
@@ -365,7 +368,7 @@ describe('Handoff 7 fixes', () => {
     await json('POST', `/api/open/rooms/${room}/post`, { handle: 'qa-a', body: 'after leave' });
     await new Promise((res) => setTimeout(res, 50));
     assert.equal(pushed.length, 2);
-    inbox = await json('GET', '/api/open/inbox?handle=qa-c');
+    inbox = humanInbox('qa-c');
     assert.equal(inbox.data.items.length, 0);
     notify.clearAll();
   });
@@ -561,7 +564,7 @@ describe('Handoff 7 recheck: room deletion (R1) and id case (R3)', () => {
 
   it("R1: a stranger's leave on an all-expired room is refused; the room and a kept member's inbox survive", async () => {
     const room = await expiredRoom('qa-z', 'qa-z2');
-    const before = await json('GET', '/api/open/inbox?handle=qa-z');
+    const before = humanInbox('qa-z');
     assert.equal(before.data.items.find((i) => i.room_id === room).unread, 1);
     for (const handle of ['stranger', 'made-up']) {
       const res = await json('POST', `/api/open/rooms/${room}/leave`, { handle });
@@ -571,7 +574,7 @@ describe('Handoff 7 recheck: room deletion (R1) and id case (R3)', () => {
     }
     assert.equal(openStore._openRooms.has(room), true);
     assert.equal(openStore.getRoom(room).messages.length, 1);
-    const after = await json('GET', '/api/open/inbox?handle=qa-z');
+    const after = humanInbox('qa-z');
     assert.equal(after.data.items.find((i) => i.room_id === room).unread, 1);
     const rejoin = await json('POST', `/api/open/rooms/${room}/join`, { handle: 'qa-z', party: 'human' });
     assert.equal(rejoin.status, 200);
@@ -583,7 +586,7 @@ describe('Handoff 7 recheck: room deletion (R1) and id case (R3)', () => {
     assert.equal(left.status, 200);
     assert.equal(openStore._openRooms.has(room), true);
     assert.equal(openStore.getRoom(room).messages.length, 1);
-    const inbox = await json('GET', '/api/open/inbox?handle=qa-w1');
+    const inbox = humanInbox('qa-w1');
     assert.equal(inbox.data.items.length, 1);
     assert.equal(inbox.data.items[0].unread, 1);
     // The last present member leaving does not delete it either while a kept member remains.
