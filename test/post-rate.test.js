@@ -145,6 +145,32 @@ describe('Post rate limit (R12-1b)', () => {
       assert.equal(k('203.0.113.7, 10.0.0.1'), 'ip:203.0.113.7');
     });
 
+    it('maps every spelling of an IPv4-mapped address to its IPv4 (L-1)', () => {
+      for (const ip of ['::ffff:203.0.113.7', '0:0:0:0:0:ffff:203.0.113.7', '::ffff:cb00:7107', '::FFFF:CB00:7107', '0:0:0:0:0:ffff:cb00:7107']) {
+        assert.equal(rateLimit.addressKey(ip), '203.0.113.7', ip);
+      }
+      assert.equal(rateLimit.addressKey('::1'), '0:0:0:0::/64');
+      assert.equal(rateLimit.addressKey('::ffff:0:cb00:7107'), '0:0:0:0::/64', 'SIIT form is not ::ffff:0:0/96');
+    });
+
+    it('warns loudly, once, when OPEN_CLIENT_IP_HEADER is not a known proxy header (L-2)', () => {
+      const lines = [];
+      const warn = console.warn;
+      console.warn = (m) => lines.push(String(m));
+      try {
+        process.env.OPEN_CLIENT_IP_HEADER = 'x-real-ipp';
+        for (let i = 0; i < 3; i++) assert.equal(rateLimit.clientKey(fakeReq({}, '100.64.0.1')), rateLimit.FALLBACK_KEY);
+        process.env.OPEN_CLIENT_IP_HEADER = 'CF-Connecting-IP';
+        rateLimit.clientKey(fakeReq({ 'cf-connecting-ip': '203.0.113.7' }, '100.64.0.1'));
+      } finally {
+        console.warn = warn;
+        process.env.OPEN_CLIENT_IP_HEADER = 'x-real-ip';
+      }
+      assert.equal(lines.length, 1, lines.join('\n'));
+      assert.match(lines[0], /^WARNING: OPEN_CLIENT_IP_HEADER is "x-real-ipp"/);
+      assert.match(lines[0], /ONE rate-limit allowance/);
+    });
+
     it('logs each keying state once, without addresses', () => {
       const lines = [];
       const log = console.log;
