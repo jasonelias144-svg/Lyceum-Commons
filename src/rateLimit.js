@@ -15,6 +15,39 @@ function perMinute() {
   return Number.isFinite(n) && n >= 0 ? n : DEFAULT_PER_MIN;
 }
 
+/**
+ * The header that carries the client's address, when a proxy we trust sets it (lowercase name), or
+ * null to use req.ip. OPEN_CLIENT_IP_HEADER names it ('none' turns it off). On Railway it defaults
+ * to x-real-ip: Railway's edge sets that header and overwrites any value a client sends, while
+ * X-Forwarded-For carries an internal hop that changes per connection, so req.ip there is not the
+ * client (live QC on 3acf30f: 42 posts from one address, no 429).
+ */
+function clientIpHeader() {
+  const raw = process.env.OPEN_CLIENT_IP_HEADER;
+  if (raw !== undefined && raw !== '') return raw.toLowerCase() === 'none' ? null : raw.toLowerCase();
+  return process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_ENVIRONMENT_NAME ? 'x-real-ip' : null;
+}
+
+let loggedSource = null;
+
+/**
+ * The rate-limit key for a REST request: the trusted header when it is configured and present,
+ * otherwise req.ip. The first time each source is used it is logged once, by name only (no
+ * addresses), with whether req.ip agreed, so a wrong setup shows in the deploy log.
+ */
+function clientKey(req) {
+  const name = clientIpHeader();
+  const value = name ? String(req.get(name) || '').split(',')[0].trim() : '';
+  const source = value ? name : 'req.ip';
+  const key = value || req.ip;
+  if (loggedSource !== source) {
+    loggedSource = source;
+    const note = value ? ` (req.ip ${value === req.ip ? 'agrees' : 'differs'})` : name ? ` (${name} missing)` : '';
+    console.log(`Post rate limit keyed by ${source}${note}`);
+  }
+  return `ip:${key}`;
+}
+
 const buckets = new Map();
 let clock = () => Date.now();
 
@@ -51,6 +84,7 @@ function prune(t, limit, msPerPost) {
 
 function _reset() {
   buckets.clear();
+  loggedSource = null;
   clock = () => Date.now();
 }
 
@@ -58,4 +92,4 @@ function _setClock(fn) {
   clock = fn;
 }
 
-module.exports = { takePost, DEFAULT_PER_MIN, _reset, _setClock, _buckets: buckets };
+module.exports = { takePost, clientKey, clientIpHeader, DEFAULT_PER_MIN, _reset, _setClock, _buckets: buckets };
