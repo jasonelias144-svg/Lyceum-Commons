@@ -172,7 +172,17 @@ function assertPresent(party, who, roomId) {
   return room;
 }
 
-async function subscribe({ party, who, url, events, room_id }) {
+/**
+ * Human subscriptions carry `owner`, the guest id that holds the name. They count toward that
+ * guest's limit only, and they fire only in rooms where that guest holds that name.
+ */
+function mineOf(party, who, owner) {
+  return Array.from(subscriptions.values()).filter(
+    (s) => s.party === party && s.who === who && (party !== 'human' || (s.owner || null) === (owner || null))
+  );
+}
+
+async function subscribe({ party, who, owner, url, events, room_id }) {
   const clean = checkUrlShape(url);
   const wanted = events && events.length ? events : ['turn', 'mention'];
   if (!wanted.every((e) => EVENTS.includes(e))) {
@@ -182,7 +192,7 @@ async function subscribe({ party, who, url, events, room_id }) {
   if (subscriptions.size >= MAX_SUBSCRIPTIONS) {
     throw badUrl('This server has reached its webhook limit. Try again later.');
   }
-  const mine = Array.from(subscriptions.values()).filter((s) => s.party === party && s.who === who);
+  const mine = mineOf(party, who, owner);
   if (mine.length >= MAX_SUBSCRIPTIONS_PER_PARTICIPANT) {
     throw badUrl(`At most ${MAX_SUBSCRIPTIONS_PER_PARTICIPANT} webhooks per participant.`);
   }
@@ -193,6 +203,7 @@ async function subscribe({ party, who, url, events, room_id }) {
     party,
     who,
     room_id,
+    ...(party === 'human' ? { owner: owner || null } : {}),
     url: clean,
     events: Array.from(new Set(wanted)),
     created_at: new Date().toISOString(),
@@ -375,7 +386,7 @@ function checkPushSubscription(sub) {
 }
 
 /** Store (or replace, for the same device endpoint) a Web Push subscription. */
-function subscribeWebPush({ party, who, subscription, events, room_id }) {
+function subscribeWebPush({ party, who, owner, subscription, events, room_id }) {
   const push = checkPushSubscription(subscription);
   const wanted = events && events.length ? events : ['turn', 'mention'];
   if (!wanted.every((e) => EVENTS.includes(e))) throw badUrl(`events must be drawn from: ${EVENTS.join(', ')}.`);
@@ -385,7 +396,7 @@ function subscribeWebPush({ party, who, subscription, events, room_id }) {
     if (s.push && s.push.endpoint === push.endpoint && s.room_id === room_id) subscriptions.delete(id);
   }
   if (subscriptions.size >= MAX_SUBSCRIPTIONS) throw badUrl('This server has reached its webhook limit. Try again later.');
-  const mine = Array.from(subscriptions.values()).filter((s) => s.party === party && s.who === who);
+  const mine = mineOf(party, who, owner);
   if (mine.length >= MAX_SUBSCRIPTIONS_PER_PARTICIPANT) {
     throw badUrl(`At most ${MAX_SUBSCRIPTIONS_PER_PARTICIPANT} notification targets per participant.`);
   }
@@ -395,6 +406,7 @@ function subscribeWebPush({ party, who, subscription, events, room_id }) {
     party,
     who,
     room_id,
+    ...(party === 'human' ? { owner: owner || null } : {}),
     kind: 'webpush',
     url: `${new URL(push.endpoint).origin}/…`,
     push,
@@ -581,6 +593,8 @@ function onMessage(room, message) {
     if (sub.room_id !== room.id || !sub.enabled) continue;
     // Only members hear a room; a leave drops the subscription, and this covers anything missed.
     if (!openStore.isMember(room, sub.party, sub.who)) continue;
+    // A human name is per room: only the guest holding it here hears about it.
+    if (sub.party === 'human' && !openStore.holdsIn(room, sub.owner, sub.who)) continue;
     const event = eventFor(room, message, sub.party, sub.who);
     if (!event) continue;
     const wanted = EVENTS.slice(EVENTS.indexOf(event)).find((e) => sub.events.includes(e));
@@ -617,6 +631,20 @@ function clearAll() {
 
 openStore.onMessage(onMessage);
 openStore.onLeave(dropMember);
+
+/**
+ * Keep human subscriptions in step with names. Subscriptions belong to one room, so a claim (the
+ * first rejoin of a membership from before guest keys) hands that room's unowned subscriptions
+ * for the name to the claiming guest, and a release (leave, or 30 days idle) drops that guest's
+ * subscriptions for the name in that room.
+ */
+openStore.onGuestEvent(({ type, room_id, owner, handle }) => {
+  for (const [id, s] of subscriptions) {
+    if (s.party !== 'human' || s.who !== handle || s.room_id !== room_id) continue;
+    if (type === 'claim' && !s.owner) s.owner = owner;
+    else if (type === 'release' && (s.owner || null) === (owner || null)) subscriptions.delete(id);
+  }
+});
 
 module.exports = {
   EVENTS,
