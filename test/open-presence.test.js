@@ -332,7 +332,7 @@ describe('Handoff 7 fixes', () => {
     });
     const room = await roomWith('qa-a', 'qa-c');
     const subscription = { endpoint: 'https://web.push.apple.com/cWEtYw', keys: { p256dh: 'BPk3yK0test', auth: 'authsecret' } };
-    const sub = await json('POST', '/api/open/push/subscribe', { handle: 'qa-c', subscription, events: ['message'] });
+    const sub = await json('POST', '/api/open/push/subscribe', { room_id: room, handle: 'qa-c', subscription, events: ['message'] });
     assert.equal(sub.status, 201);
     await json('POST', `/api/open/rooms/${room}/post`, { handle: 'qa-a', body: 'news' });
     let inbox = await json('GET', '/api/open/inbox?handle=qa-c');

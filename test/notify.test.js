@@ -98,7 +98,7 @@ async function call(client, name, args = {}) {
 describe('webhooks', () => {
   it('an AI webhook gets a signed "turn" delivery when a human hands it the turn', async () => {
     const claude = await mcp();
-    const sub = await call(claude, 'subscribe_notifications', { url: `${hookBase}/claude` });
+    const sub = await call(claude, 'subscribe_notifications', { room_id: 'open-welcome', url: `${hookBase}/claude` });
     assert.match(sub.text, /Subscribed hook_\w+ .* for turn, mention/);
     const secret = sub.text.match(/shown once\): (\w+)/)[1];
 
@@ -135,6 +135,7 @@ describe('webhooks', () => {
     await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
     await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'ana', party: 'human' });
     const reg = await json('POST', '/api/open/notifications', {
+      room_id: 'open-welcome',
       handle: 'jason',
       url: `${hookBase}/jason`,
       events: ['message'],
@@ -161,12 +162,15 @@ describe('webhooks', () => {
 
   it('refuses http, private hosts and unknown events when private delivery is not allowed', async () => {
     process.env.LYCEUM_WEBHOOK_ALLOW_PRIVATE = '0';
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
     try {
       for (const url of ['http://example.com/x', 'https://127.0.0.1/x', 'https://localhost/x', 'https://[::1]/x', 'https://10.1.2.3/x']) {
-        const r = await json('POST', '/api/open/notifications', { handle: 'jason', url });
+        const r = await json('POST', '/api/open/notifications', { room_id: 'open-welcome', handle: 'jason', url });
         assert.equal(r.status, 400, url);
+        assert.match(r.data.error.message, /https|not public/, url);
       }
       const ev = await json('POST', '/api/open/notifications', {
+        room_id: 'open-welcome',
         handle: 'jason',
         url: 'https://example.com/x',
         events: ['everything'],
@@ -184,7 +188,8 @@ describe('webhooks', () => {
   });
 
   it('webhooks survive a snapshot round trip', async () => {
-    const sub = await notify.subscribe({ party: 'human', who: 'jason', url: `${hookBase}/x` });
+    openStore.joinHuman(openStore.getRoom('open-welcome'), 'jason');
+    const sub = await notify.subscribe({ party: 'human', who: 'jason', url: `${hookBase}/x`, room_id: 'open-welcome' });
     const snap = JSON.parse(JSON.stringify(persist.serialize()));
     notify.clearAll();
     persist.restore(snap);
@@ -244,9 +249,10 @@ describe('web push', () => {
     assert.equal(key.status, 200);
     assert.match(key.data.publicKey, /^[A-Za-z0-9_-]{80,}$/);
 
-    const bad = await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: sub('https://evil.example/x') });
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
+    const bad = await json('POST', '/api/open/push/subscribe', { room_id: 'open-welcome', handle: 'jason', subscription: sub('https://evil.example/x') });
     assert.equal(bad.status, 400);
-    const missing = await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: { endpoint: 'https://web.push.apple.com/x' } });
+    const missing = await json('POST', '/api/open/push/subscribe', { room_id: 'open-welcome', handle: 'jason', subscription: { endpoint: 'https://web.push.apple.com/x' } });
     assert.equal(missing.status, 400);
 
     const sent = [];
@@ -254,7 +260,7 @@ describe('web push', () => {
       sent.push({ push, body: JSON.parse(body), options });
       return { statusCode: 201 };
     });
-    const ok = await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: sub('https://web.push.apple.com/QWxpY2U') });
+    const ok = await json('POST', '/api/open/push/subscribe', { room_id: 'open-welcome', handle: 'jason', subscription: sub('https://web.push.apple.com/QWxpY2U') });
     assert.equal(ok.status, 201);
     assert.ok(ok.data.secret);
 
@@ -269,7 +275,7 @@ describe('web push', () => {
     assert.equal(sent[0].options.vapidDetails.publicKey, key.data.publicKey);
 
     // Same device subscribing again replaces, not duplicates.
-    await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: sub('https://web.push.apple.com/QWxpY2U') });
+    await json('POST', '/api/open/push/subscribe', { room_id: 'open-welcome', handle: 'jason', subscription: sub('https://web.push.apple.com/QWxpY2U') });
     assert.equal(notify.list('human', 'jason').length, 1);
   });
 
@@ -279,7 +285,8 @@ describe('web push', () => {
       err.statusCode = 410;
       throw err;
     });
-    await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: sub('https://fcm.googleapis.com/fcm/send/abc') });
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
+    await json('POST', '/api/open/push/subscribe', { room_id: 'open-welcome', handle: 'jason', subscription: sub('https://fcm.googleapis.com/fcm/send/abc') });
     assert.equal(notify.list('human', 'jason').length, 1);
     await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'ana', party: 'human' });
     await json('POST', '/api/open/rooms/open-welcome/post', { handle: 'ana', body: 'hi @jason' });

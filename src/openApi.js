@@ -490,31 +490,39 @@ router.post('/rooms/:id/settings', (req, res) => {
 });
 
 /**
- * POST /notifications  { handle, url, events? }  (human)  or  Authorization: Bearer (ai)
- * Register a webhook for yourself. Returns { id, secret } — keep the secret: it signs every
- * delivery and is what a human needs to remove the webhook later.
+ * Who is registering a notification, and for which room. Subscriptions belong to one room and
+ * need that name present in it now (notify checks). An AI's Bearer is already room-scoped, so
+ * its room is the credential's room; a different room_id in the body is refused.
+ */
+function notificationOwner(req, bodyIn) {
+  const bearer = extractBearer(req);
+  if (bearer) {
+    const binding = openStore.authenticate(bearer);
+    if (!binding) throw protocolError('invalid_credential');
+    if (bodyIn.room_id !== undefined && bodyIn.room_id !== binding.room_id) {
+      throw protocolError('invalid_request', 'room_id must be the room your credential belongs to.');
+    }
+    return { party: 'ai', who: binding.agent_id, room_id: binding.room_id };
+  }
+  return { party: 'human', who: validateHandle(bodyIn.handle), room_id: bodyIn.room_id };
+}
+
+/**
+ * POST /notifications  { room_id, handle, url, events? }  (human)  or  Authorization: Bearer (ai)
+ * Register a webhook for yourself in one room you are in now. Returns { id, secret } — keep the
+ * secret: it signs every delivery and is what a human needs to remove the webhook later.
+ * Leaving the room removes it.
  * DELETE /notifications/:id  { secret }  (human)  or  Authorization: Bearer (ai, own webhooks)
  */
 router.post('/notifications', async (req, res) => {
   try {
     const bodyIn = req.body || {};
-    let party;
-    let who;
-    const bearer = extractBearer(req);
-    if (bearer) {
-      const binding = openStore.authenticate(bearer);
-      if (!binding) throw protocolError('invalid_credential');
-      party = 'ai';
-      who = binding.agent_id;
-    } else {
-      party = 'human';
-      who = validateHandle(bodyIn.handle);
-    }
+    const owner = notificationOwner(req, bodyIn);
     const events = bodyIn.events;
     if (events !== undefined && (!Array.isArray(events) || events.some((e) => typeof e !== 'string'))) {
       throw protocolError('invalid_request', 'events must be an array of strings.');
     }
-    const sub = await notify.subscribe({ party, who, url: bodyIn.url, events });
+    const sub = await notify.subscribe({ ...owner, url: bodyIn.url, events });
     res.status(201).json({ ...notify.describe(sub), secret: sub.secret });
   } catch (err) {
     if (err.code === 'invalid_webhook') {
@@ -546,29 +554,19 @@ router.get('/push/key', (_req, res) => {
 });
 
 /**
- * POST /push/subscribe  human: { handle, subscription, events? }  ai: Authorization: Bearer
- * Store this device's PushSubscription. Returns { id, secret }; remove it with
- * DELETE /notifications/:id { secret }.
+ * POST /push/subscribe  human: { room_id, handle, subscription, events? }  ai: Authorization: Bearer
+ * Store this device's PushSubscription for one room you are in now. Returns { id, secret };
+ * remove it with DELETE /notifications/:id { secret }. Leaving the room removes it.
  */
 router.post('/push/subscribe', (req, res) => {
   try {
     const bodyIn = req.body || {};
-    let party = 'human';
-    let who;
-    const bearer = extractBearer(req);
-    if (bearer) {
-      const binding = openStore.authenticate(bearer);
-      if (!binding) throw protocolError('invalid_credential');
-      party = 'ai';
-      who = binding.agent_id;
-    } else {
-      who = validateHandle(bodyIn.handle);
-    }
+    const owner = notificationOwner(req, bodyIn);
     const events = bodyIn.events;
     if (events !== undefined && (!Array.isArray(events) || events.some((e) => typeof e !== 'string'))) {
       throw protocolError('invalid_request', 'events must be an array of strings.');
     }
-    const sub = notify.subscribeWebPush({ party, who, subscription: bodyIn.subscription, events });
+    const sub = notify.subscribeWebPush({ ...owner, subscription: bodyIn.subscription, events });
     res.status(201).json({ ...notify.describe(sub), secret: sub.secret });
   } catch (err) {
     if (err.code === 'invalid_webhook') return sendError(res, protocolError('invalid_request', err.message));
