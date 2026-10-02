@@ -12,6 +12,7 @@ const express = require('express');
 const openStore = require('./openStore');
 const notify = require('./notify');
 const persist = require('./persist');
+const rateLimit = require('./rateLimit');
 const { protocolError, sendError } = require('./errors');
 
 const router = express.Router();
@@ -25,6 +26,21 @@ router.use((req, res, next) => {
   });
   next();
 });
+
+/**
+ * One post from this client's address, or a 429 with Retry-After (R12-1b). Keyed by address
+ * because names and credentials are free to mint. Behind Railway's proxy, `trust proxy` (see
+ * server.js) makes req.ip the caller's address rather than the proxy's.
+ */
+function takePost(req, res) {
+  const waitMs = rateLimit.takePost(`ip:${req.ip}`);
+  if (!waitMs) return;
+  res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
+  throw protocolError('rate_limited');
+}
+
+/** How long an inbox may wait for boot indexing before answering "try again shortly". */
+const INBOX_WAIT_MS = 10000;
 
 const HANDLE_RE = /^[^\x00-\x1f\x7f]{1,40}$/;
 const AGENT_RE = /^[a-zA-Z0-9._-]{1,64}$/;
@@ -244,6 +260,7 @@ router.post('/rooms/:id/post', (req, res) => {
       const body = validateBody(rawBody);
       const turnFields = validateTurnFields(bodyIn, POST_STATES);
       const reply_to = validateReplyTo(bodyIn.reply_to);
+      takePost(req, res);
       const message = openStore.addMessage(room, { author, party: forcedParty, body, reply_to, ...turnFields });
       return res.status(201).json({ message, turn: openStore.turnOf(room) });
     }
@@ -265,6 +282,7 @@ router.post('/rooms/:id/post', (req, res) => {
     const body = validateBody(rawBody);
     const turnFields = validateTurnFields(bodyIn, POST_STATES);
     const reply_to = validateReplyTo(bodyIn.reply_to);
+    takePost(req, res);
     const message = openStore.addMessage(room, { author, party: forcedParty, body, reply_to, ...turnFields });
     res.status(201).json({ message, turn: openStore.turnOf(room) });
   } catch (err) {
@@ -409,12 +427,18 @@ router.post('/rooms/:id/heartbeat', (req, res) => {
  * GET /inbox  Authorization: Bearer (ai room credential). The human ?handle= form is off until guest keys (#33).
  * The credential's own room only: whether its turn awaits you, it mentions you, or it has unread messages.
  */
-router.get('/inbox', (req, res) => {
+router.get('/inbox', async (req, res) => {
   try {
     const bearer = extractBearer(req);
     if (bearer) {
       const binding = openStore.authenticate(bearer);
       if (!binding) throw protocolError('invalid_credential');
+      // Right after a restart, older messages are still being indexed (R12-1b). Wait for that
+      // rather than build them all here, which would hold up every other request.
+      if (!(await openStore.mentionsReady(INBOX_WAIT_MS))) {
+        res.set('Retry-After', '5');
+        throw protocolError('warming_up');
+      }
       // A room credential only proves presence in its own room. Anyone can mint one under any free
       // name in a room of their own, so a cross-room view would turn a name into that person's
       // rooms (QC I-1). MCP check_inbox is keyed per connector and keeps the cross-room view.
