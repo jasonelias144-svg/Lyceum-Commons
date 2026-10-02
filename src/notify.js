@@ -241,16 +241,14 @@ function unsubscribe(id, { party, who, secret }) {
 /** Names compare the way Open joins compare them (case, width, accents, lookalikes). */
 const sameId = openStore.sameId;
 
-function mentions(body, who) {
-  const escaped = who.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-  return new RegExp(`@${escaped}(?![\\w.-])`, 'i').test(body);
-}
+/** @mentions compare names the same way (see openStore.mentionsName). */
+const mentions = openStore.mentionsName;
 
 /** Which event (if any) this post is for one participant: turn > mention > message. */
 function eventFor(room, message, party, who) {
   if (message.party === party && sameId(message.author, who)) return null;
   if (openStore.awaits(room, message.awaiting, party, who)) return 'turn';
-  if (mentions(message.body, who)) return 'mention';
+  if (mentions(message, who)) return 'mention';
   // Members, not just those present: a member who timed out still hears about new posts.
   if (openStore.isMember(room, party, who)) return 'message';
   return null;
