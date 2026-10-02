@@ -28,23 +28,79 @@ function clientIpHeader() {
   return process.env.RAILWAY_ENVIRONMENT || process.env.RAILWAY_ENVIRONMENT_NAME ? 'x-real-ip' : null;
 }
 
-let loggedSource = null;
+const net = require('net');
+
+/** Every request whose address can't be trusted shares this one bucket. */
+const FALLBACK_KEY = 'ip:fallback';
 
 /**
- * The rate-limit key for a REST request: the trusted header when it is configured and present,
- * otherwise req.ip. The first time each source is used it is logged once, by name only (no
- * addresses), with whether req.ip agreed, so a wrong setup shows in the deploy log.
+ * A bucket name for one address: IPv4 as is (an IPv4-mapped IPv6 address counts as its IPv4),
+ * IPv6 grouped by its /64, since one subscriber usually holds a whole /64 and could otherwise
+ * rotate through it. Returns null when `raw` is not an IP address.
+ */
+function addressKey(raw) {
+  const value = String(raw || '').trim();
+  if (net.isIPv4(value)) return value;
+  const bare = value.split('%')[0];
+  if (!net.isIPv6(bare)) return null;
+  const mapped = bare.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
+  if (mapped) return mapped[1];
+  let a = bare.toLowerCase();
+  const tail4 = a.match(/^(.*:)(\d+)\.(\d+)\.(\d+)\.(\d+)$/);
+  if (tail4) {
+    const [b0, b1, b2, b3] = tail4.slice(2).map(Number);
+    a = `${tail4[1]}${((b0 << 8) | b1).toString(16)}:${((b2 << 8) | b3).toString(16)}`;
+  }
+  let groups;
+  if (a.includes('::')) {
+    const [head, tail] = a.split('::');
+    const h = head ? head.split(':') : [];
+    const t = tail ? tail.split(':') : [];
+    groups = [...h, ...Array(8 - h.length - t.length).fill('0'), ...t];
+  } else {
+    groups = a.split(':');
+  }
+  return `${groups.slice(0, 4).map((g) => parseInt(g, 16).toString(16)).join(':')}::/64`;
+}
+
+const loggedStates = new Set();
+
+/** Logs each keying state once per process, by name only (never an address). */
+function logState(state) {
+  if (loggedStates.has(state)) return;
+  loggedStates.add(state);
+  console.log(`Post rate limit keyed by ${state}`);
+}
+
+/**
+ * The rate-limit key for a REST request. With a trusted header configured, its first value when
+ * that is a valid IP address. When the header is missing or holds something that isn't an
+ * address, every such request shares one fallback bucket: behind Railway, req.ip is an internal
+ * hop that changes per connection, so keying on it would give each request a fresh allowance.
+ * With no header configured, req.ip, and the shared fallback if even that isn't an address.
  */
 function clientKey(req) {
   const name = clientIpHeader();
-  const value = name ? String(req.get(name) || '').split(',')[0].trim() : '';
-  const source = value ? name : 'req.ip';
-  const key = value || req.ip;
-  if (loggedSource !== source) {
-    loggedSource = source;
-    const note = value ? ` (req.ip ${value === req.ip ? 'agrees' : 'differs'})` : name ? ` (${name} missing)` : '';
-    console.log(`Post rate limit keyed by ${source}${note}`);
+  if (name) {
+    const raw = req.get(name);
+    if (raw === undefined || String(raw).trim() === '') {
+      logState(`a shared fallback bucket (${name} missing)`);
+      return FALLBACK_KEY;
+    }
+    const key = addressKey(String(raw).split(',')[0]);
+    if (!key) {
+      logState(`a shared fallback bucket (${name} not an IP address)`);
+      return FALLBACK_KEY;
+    }
+    logState(name);
+    return `ip:${key}`;
   }
+  const key = addressKey(req.ip);
+  if (!key) {
+    logState('a shared fallback bucket (req.ip not an IP address)');
+    return FALLBACK_KEY;
+  }
+  logState('req.ip');
   return `ip:${key}`;
 }
 
@@ -84,7 +140,7 @@ function prune(t, limit, msPerPost) {
 
 function _reset() {
   buckets.clear();
-  loggedSource = null;
+  loggedStates.clear();
   clock = () => Date.now();
 }
 
@@ -92,4 +148,4 @@ function _setClock(fn) {
   clock = fn;
 }
 
-module.exports = { takePost, clientKey, clientIpHeader, DEFAULT_PER_MIN, _reset, _setClock, _buckets: buckets };
+module.exports = { takePost, clientKey, clientIpHeader, addressKey, FALLBACK_KEY, DEFAULT_PER_MIN, _reset, _setClock, _buckets: buckets };
