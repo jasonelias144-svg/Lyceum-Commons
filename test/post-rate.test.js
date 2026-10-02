@@ -120,12 +120,52 @@ describe('Post rate limit (R12-1b)', () => {
       assert.equal((await post(4, '198.51.100.9')).status, 201, 'another client has its own allowance');
     });
 
-    it('falls back to req.ip when the header is missing', async () => {
+    const fakeReq = (headers, ip) => ({ ip, get: (n) => headers[n.toLowerCase()] });
+
+    it('without a usable X-Real-IP, every request shares one fallback bucket (req.ip changes per hop there)', async () => {
+      const k1 = rateLimit.clientKey(fakeReq({}, '100.64.0.1'));
+      const k2 = rateLimit.clientKey(fakeReq({}, '100.64.0.2'));
+      const k3 = rateLimit.clientKey(fakeReq({ 'x-real-ip': 'not-an-ip' }, '100.64.0.3'));
+      const k4 = rateLimit.clientKey(fakeReq({ 'x-real-ip': '1.2.3.4.5' }, '100.64.0.4'));
+      for (const k of [k1, k2, k3, k4]) assert.equal(k, rateLimit.FALLBACK_KEY);
+      // Over HTTP: posts with no header at all run out together.
       const a = await room();
       for (let i = 0; i < 3; i++) {
         assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: `m${i}` })).status, 201);
       }
-      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: 'x' })).status, 429);
+      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: 'x' }, { 'X-Real-IP': 'junk' })).status, 429);
+      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: 'y' }, { 'X-Real-IP': '203.0.113.7' })).status, 201, 'a real address keeps its own allowance');
+    });
+
+    it('groups IPv6 by /64 and reads an IPv4-mapped address as IPv4', () => {
+      const k = (ip) => rateLimit.clientKey(fakeReq({ 'x-real-ip': ip }, '100.64.0.1'));
+      assert.equal(k('2001:db8:1:2:aaaa::1'), k('2001:0db8:0001:0002:ffff:1:2:3'));
+      assert.notEqual(k('2001:db8:1:2::1'), k('2001:db8:1:3::1'));
+      assert.equal(k('::ffff:203.0.113.7'), k('203.0.113.7'));
+      assert.equal(k('203.0.113.7, 10.0.0.1'), 'ip:203.0.113.7');
+    });
+
+    it('logs each keying state once, without addresses', () => {
+      const lines = [];
+      const log = console.log;
+      console.log = (m) => lines.push(String(m));
+      try {
+        for (let i = 0; i < 3; i++) {
+          rateLimit.clientKey(fakeReq({ 'x-real-ip': '203.0.113.7' }, '100.64.0.1'));
+          rateLimit.clientKey(fakeReq({}, '100.64.0.1'));
+          rateLimit.clientKey(fakeReq({ 'x-real-ip': 'junk' }, '100.64.0.1'));
+        }
+      } finally {
+        console.log = log;
+      }
+      assert.equal(lines.length, 3);
+      assert.ok(lines.every((l) => !/\d+\.\d+\.\d+\.\d+/.test(l)), lines.join('\n'));
+    });
+
+    it('with no header configured, keys on req.ip (normalized), falling back when it is not an address', () => {
+      process.env.OPEN_CLIENT_IP_HEADER = 'none';
+      assert.equal(rateLimit.clientKey(fakeReq({ 'x-real-ip': '203.0.113.7' }, '::ffff:127.0.0.1')), 'ip:127.0.0.1');
+      assert.equal(rateLimit.clientKey(fakeReq({}, undefined)), rateLimit.FALLBACK_KEY);
     });
 
     it('defaults to X-Real-IP only on Railway, and OPEN_CLIENT_IP_HEADER=none turns it off', () => {
