@@ -385,27 +385,44 @@ describe('Memberships from before guest keys', () => {
     assert.equal(notify._subscriptions.has('hook_lena'), false);
   });
 
-  it('after a restart, one that went quiet long ago opens at once (no shared grace); a recent one is refused in the usual words', async () => {
-    // The boot grace (one fresh TTL from boot) is for held names only. If unclaimed names got it,
-    // all of them would open at the same predictable moment after a deploy (QC Handoff 14, 2b).
+  it('after a restart, an unclaimed one counts as away at once, so its owner reclaims it on reload', async () => {
+    // Nothing can refresh an unclaimed name (every call needs a key that holds it), so giving it
+    // the boot TTL would only open every such name at one predictable moment (QC Handoff 14, 2b, 3).
     const t0 = Date.now();
     const room = await newRoom();
     await guest(room, 'bo');
     const r = openStore._openRooms.get(room);
-    const old = new Date(t0 - 60 * 60 * 1000).toISOString();
-    const recent = new Date(t0 - 60 * 1000).toISOString();
-    r.members['human:quiet'] = true;
-    r.roster.set('human:quiet', { id: 'quiet', party: 'human', joined_at: old, last_seen: old });
+    const recent = new Date(t0 - 60 * 1000).toISOString(); // active a minute before the deploy
     r.members['human:busy'] = true;
     r.roster.set('human:busy', { id: 'busy', party: 'human', joined_at: recent, last_seen: recent });
-    const quiet = await join(room, 'quiet');
-    assert.equal(quiet.status, 200, JSON.stringify(quiet.data));
-    assert.match(quiet.data.guest_key, /^g_/);
+    r.roster.get('human:bo').last_seen = recent; // bo, who holds a key, was also active then
+    const was = openStore._setPresenceEpoch(t0); // the server booted just now
+    try {
+      const back = await join(room, 'busy');
+      assert.equal(back.status, 200, JSON.stringify(back.data));
+      assert.match(back.data.guest_key, /^g_/);
+      assert.equal((await join(room, 'busy')).status, 409, 'claimed: held from now on');
+      // A name a guest holds is refused as before, in the same generic words.
+      const held = await join(room, 'bo');
+      assert.equal(held.status, 409);
+      assert.equal(held.data.error.code, 'handle_taken');
+    } finally {
+      openStore._setPresenceEpoch(was);
+    }
+  });
+
+  it('while present, an unclaimed name is refused in the same words as a held one', async () => {
+    const t0 = Date.now();
+    const room = await newRoom();
+    await guest(room, 'bo');
+    const r = openStore._openRooms.get(room);
+    const at = new Date(t0).toISOString();
+    r.members['human:busy'] = true;
+    r.roster.set('human:busy', { id: 'busy', party: 'human', joined_at: at, last_seen: at });
     const busy = await join(room, 'busy');
     assert.equal(busy.status, 409);
-    assert.equal(busy.data.error.code, 'handle_taken');
     const held = await join(room, 'bo');
-    assert.equal(busy.data.error.message, held.data.error.message, 'the same words as a held name, so nothing says which names are claimable or when');
+    assert.equal(busy.data.error.message, held.data.error.message, 'nothing says which names are claimable or when');
   });
 });
 
