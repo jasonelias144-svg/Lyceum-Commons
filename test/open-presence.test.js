@@ -5,6 +5,7 @@
  */
 const { describe, it, before, after, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
+const { guestHeaders, remember } = require('./guest-jar');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -48,10 +49,11 @@ async function waitFor(check, ms = 1000) {
 async function json(method, path, body, headers = {}) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...guestHeaders(path, body, headers), ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => null);
+  remember(path, body, data);
   return { status: res.status, data };
 }
 
@@ -116,6 +118,9 @@ describe('Awaiting self-heals', () => {
     assert.deepEqual(read.data.turn.awaiting, []);
     const inbox = humanInbox('qc-tester-h5');
     assert.equal(inbox.data.items.length, 0);
+    // A handle alone no longer reads an inbox (guest keys).
+    const byName = await json('GET', '/api/open/inbox?handle=qc-tester-h5');
+    assert.equal(byName.status, 401);
   });
 
   it('members stay awaited; a non-member handed the turn gets one TTL to arrive', async () => {
