@@ -913,7 +913,7 @@
     state.pollTimer = setInterval(refresh, 3000);
   }
 
-  async function refresh() {
+  async function refresh(again) {
     if (!state.roomId) return;
     try {
       let data;
@@ -940,6 +940,18 @@
       renderTurn(data.turn);
       updateComposer();
     } catch (e) {
+      // A name from before guest keys: quietly join again to get a key for it. If that is refused
+      // (it is still counted as present), say why and try again on the next poll, so this page
+      // claims it as soon as it opens. `again` stops a second attempt inside one refresh.
+      if (e.code === 'guest_key_required' && state.party === 'human' && !again) {
+        try {
+          await api('POST', `/rooms/${encodeURIComponent(state.roomId)}/join`, { handle: state.handle, party: 'human' });
+          return refresh(true);
+        } catch (e2) {
+          showError(e2.code, e2.message);
+          return;
+        }
+      }
       showError(e.code, e.message);
     }
   }
