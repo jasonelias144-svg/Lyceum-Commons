@@ -334,11 +334,14 @@ describe('RR3: one name per participant, regardless of case or party', () => {
     assert.equal((await joinHuman(room, 'ADA')).status, 200);
   });
 
-  it('duplicates restored from an older snapshot can both still rejoin', async () => {
+  it('duplicates restored from an older snapshot can both still rejoin (once away, as unclaimed names)', async () => {
     const lobby = openStore._openRooms.get('open-welcome');
     const at = new Date(t).toISOString();
     lobby.roster.set('human:jason', { id: 'jason', party: 'human', joined_at: at, last_seen: at });
     lobby.roster.set('human:Jason', { id: 'Jason', party: 'human', joined_at: at, last_seen: at });
+    // Unclaimed names from before guest keys cannot be claimed while present (QC Handoff 14, C).
+    assert.equal((await joinHuman('open-welcome', 'jason')).status, 409);
+    openStore._setClock(() => t + 11 * 60 * 1000);
     assert.equal((await joinHuman('open-welcome', 'jason')).status, 200);
     assert.equal((await joinHuman('open-welcome', 'Jason')).status, 200);
     assert.equal((await joinHuman('open-welcome', 'JASON')).status, 409);

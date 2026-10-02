@@ -353,9 +353,57 @@ describe('Memberships from before guest keys', () => {
     const claim = await join(room, 'old-timer');
     assert.equal(claim.status, 200);
     assert.match(claim.data.guest_key, /^g_/);
-    assert.equal(sub.owner !== null, true, 'the unowned subscription follows the claim');
+    assert.equal(notify._subscriptions.has('hook_legacy'), false, 'the old subscription is dropped, not handed to the claimer');
     assert.equal((await join(room, 'old-timer')).status, 409);
     assert.equal((await post(room, 'old-timer', 'back', claim.data.guest_key)).status, 201);
+  });
+
+  it('cannot be claimed while the name is present, with or without a key; once away, it can', async () => {
+    const t0 = Date.now();
+    const room = await newRoom();
+    await guest(room, 'bo'); // keeps the room open
+    const r = openStore._openRooms.get(room);
+    r.members['human:lena'] = true;
+    const at = new Date(t0).toISOString();
+    r.roster.set('human:lena', { id: 'lena', party: 'human', joined_at: at, last_seen: at });
+    const sub = { id: 'hook_lena', secret: 's', party: 'human', who: 'lena', room_id: room, owner: null, url: 'https://example.com/lena', events: ['turn', 'mention'], enabled: true };
+    notify._subscriptions.set(sub.id, sub);
+    const keyless = await join(room, 'lena');
+    assert.equal(keyless.status, 409);
+    assert.equal(keyless.data.error.code, 'handle_taken');
+    assert.equal(keyless.data.guest_key, undefined, 'a refused claim hands out no key');
+    const other = await guest(room, 'zed');
+    assert.equal((await join(room, 'lena', other)).status, 409);
+    assert.equal(openStore._openRooms.get(room).members['human:lena'].owner, null);
+    assert.equal(sub.owner, null);
+    assert.equal(notify._subscriptions.has('hook_lena'), true, 'a refused claim leaves the old subscription alone');
+    openStore._setClock(() => t0 + 11 * 60 * 1000); // past the 10-minute presence TTL
+    await join(room, 'bo', undefined); // any read sweeps the roster
+    const claim = await join(room, 'lena');
+    assert.equal(claim.status, 200, JSON.stringify(claim.data));
+    assert.match(claim.data.guest_key, /^g_/);
+    assert.equal(notify._subscriptions.has('hook_lena'), false);
+  });
+});
+
+describe('Names per guest key', () => {
+  it(`one key holds at most ${openStore.MAX_NAMES_PER_GUEST} names; the same name in more rooms counts once`, async () => {
+    assert.equal(openStore.MAX_NAMES_PER_GUEST, 5);
+    const rooms = [];
+    for (let i = 0; i < 7; i++) rooms.push(await newRoom(`Cap ${i}`));
+    const key = await guest(rooms[0], 'n0');
+    for (let i = 1; i < 5; i++) assert.equal((await join(rooms[i], `n${i}`, key)).status, 200);
+    const sixth = await join(rooms[5], 'n5', key);
+    assert.equal(sixth.status, 403);
+    assert.equal(sixth.data.error.code, 'guest_name_limit');
+    assert.equal(sixth.data.guest_key, undefined);
+    assert.equal((await join(rooms[5], 'n0', key)).status, 200, 'a name it already holds still works in a new room');
+    assert.equal((await join(rooms[0], 'n0', key)).status, 200, 'rejoining a held name is fine');
+    // Leaving every room with n4 frees a slot.
+    assert.equal((await json('POST', `/api/open/rooms/${rooms[4]}/leave`, { handle: 'n4' }, key)).status, 200);
+    assert.equal((await join(rooms[6], 'n6', key)).status, 200);
+    // A different key is unaffected.
+    assert.equal((await join(rooms[6], 'other')).status, 200);
   });
 });
 
