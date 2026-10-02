@@ -369,9 +369,8 @@ function buildMentionIndex(body) {
 }
 
 /**
- * Build the mention index of every message in the store (R12-1). Indexes live only in memory,
- * so a restore calls this before the server listens; otherwise the first inbox after a restart
- * would build them all at once while every request waits.
+ * Build the mention index of every message in the store, all at once (R12-1). Boot uses
+ * indexMentionsInBackground instead, so the server can answer while it works.
  */
 function indexAllMentions() {
   let n = 0;
@@ -382,6 +381,68 @@ function indexAllMentions() {
     }
   }
   return n;
+}
+
+/** While restored messages are still being indexed, the job's promise; otherwise null. */
+let indexing = null;
+let indexGeneration = 0;
+/** How long each slice of background indexing may hold the event loop, in milliseconds. */
+const INDEX_SLICE_MS = 8;
+
+/**
+ * Index every message that has no mention index yet, a few milliseconds at a time with a break
+ * for other requests in between (R12-1b). Indexes live only in memory, so after a restore this
+ * runs while the server is already answering. An inbox waits for it (see mentionsReady), because
+ * building the rest in one go would stall every request. New posts are indexed when they arrive.
+ * Resolves with the number of messages indexed.
+ */
+function indexMentionsInBackground({ sliceMs = INDEX_SLICE_MS } = {}) {
+  const generation = ++indexGeneration;
+  const pending = [];
+  for (const room of openRooms.values()) {
+    for (const m of room.messages) if (!mentionIndexes.has(m)) pending.push(m);
+  }
+  if (!pending.length) {
+    indexing = null;
+    return Promise.resolve(0);
+  }
+  let i = 0;
+  const job = new Promise((resolve) => {
+    const step = () => {
+      if (generation !== indexGeneration) return resolve(i);
+      const end = Date.now() + sliceMs;
+      do mentionIndex(pending[i++]);
+      while (i < pending.length && Date.now() < end);
+      if (i < pending.length) setImmediate(step);
+      else resolve(i);
+    };
+    setImmediate(step);
+  });
+  indexing = job;
+  job.then(() => {
+    if (indexing === job) indexing = null;
+  });
+  return job;
+}
+
+/** Whether restored messages are still being indexed. */
+function mentionsIndexing() {
+  return indexing !== null;
+}
+
+/**
+ * Resolves true once every message has a mention index, or false if that takes longer than
+ * `timeoutMs` (the caller then answers "try again shortly" rather than holding the request).
+ */
+function mentionsReady(timeoutMs = Infinity) {
+  if (!indexing) return Promise.resolve(true);
+  const job = indexing.then(() => true);
+  if (!Number.isFinite(timeoutMs)) return job;
+  let timer;
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(false), timeoutMs);
+  });
+  return Promise.race([job, timeout]).finally(() => clearTimeout(timer));
 }
 
 /** The mention index for a message object (kept with the message) or a body string. */
@@ -961,6 +1022,8 @@ function maybeGc(room) {
 }
 
 function clearAll() {
+  indexGeneration++;
+  indexing = null;
   openRooms.clear();
   credentials.clear();
   presenceEpoch = now();
@@ -979,6 +1042,9 @@ module.exports = {
   MAX_CANDIDATES,
   MAX_NAME_KEY,
   indexAllMentions,
+  indexMentionsInBackground,
+  mentionsIndexing,
+  mentionsReady,
   awaits,
   MAX_PARTIES,
   OPEN_WELCOME_ROOM_ID,
