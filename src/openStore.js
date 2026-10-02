@@ -253,11 +253,12 @@ const LOOKALIKE_CAPITALS = {
 /**
  * The comparison form of a participant name: compatibility-normalized (fullwidth `ｊａｓｏｎ`
  * is `jason`), invisible characters (zero-width, bidi controls, Hangul fillers, variation
- * selectors, the blank braille cell) removed, whitespace collapsed, lowercased, Latin accents
- * and dots removed (`İLK` is `ilk`), and common lookalike letters folded. Only for comparing;
- * the display name is never changed. A name that is empty once blanks are removed is refused.
+ * selectors, the blank braille cell, control characters) removed, whitespace collapsed,
+ * lowercased, Latin accents and dots removed (`İLK` is `ilk`), and common lookalike letters
+ * folded. Only for comparing; the display name is never changed. A name that is empty once
+ * blanks are removed is refused.
  */
-const BLANK_RE = /[\p{Cf}\p{Default_Ignorable_Code_Point}\u2800]/gu;
+const BLANK_RE = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800\u{16FE4}\u{1D159}]/gu;
 
 function nameKey(id) {
   return String(id)
@@ -275,6 +276,122 @@ function nameKey(id) {
 
 function sameId(a, b) {
   return nameKey(a) === nameKey(b);
+}
+
+/** Longest comparison form (`nameKey`) a new name may have, in code points. AI ids are at most 64. */
+const MAX_NAME_KEY = 64;
+/** Longest name a mention can spell, in code points (handles are 40 units, AI ids 64). */
+const MENTION_SPAN = 64;
+/** Only the first this-many @s in a message are read as mentions (bounds the work per post). */
+const MAX_MENTIONS_SCANNED = 64;
+const NAME_CHAR = /[\p{L}\p{N}\p{M}_-]/u;
+const NAME_START = /[\p{L}\p{N}\p{M}_]/u;
+const NO_MENTIONS = new Float64Array(0);
+/** One index per message object, made the first time it is needed (at post time) and kept with it. */
+const mentionIndexes = new WeakMap();
+let lastBody = null;
+let lastIndex = NO_MENTIONS;
+
+/** A 53-bit hash of a folded name (two 32-bit multiply-xor hashes), so the index stores numbers, not text. */
+function keyHash(k) {
+  let a = 0x811c9dc5;
+  let b = 0x01000193;
+  for (let i = 0; i < k.length; i++) {
+    const c = k.charCodeAt(i);
+    a = Math.imul(a ^ c, 0x01000193) >>> 0;
+    b = Math.imul(b ^ c, 0x5bd1e995) >>> 0;
+    b ^= b >>> 15;
+  }
+  return a * 0x200000 + (b & 0x1fffff);
+}
+
+/**
+ * Every folded name that `body` @mentions, as a sorted list of hashes, so checking a message
+ * against many names is a lookup (8e-1: this used to fold every candidate for every name, which
+ * let one post of @s stall the server).
+ *
+ * The rules: text in `code spans` is skipped. An @ counts only at the start of a word (not after
+ * a letter, digit, `_` or `/`, so `bob@ana` and `x.org/@ana` don't mention), and only when a
+ * name starts right after it (`@ ana` doesn't). A candidate name stops at the next @ or line
+ * break, and ends only where a name can end: the next character is not a letter, digit or
+ * mark in any script, `_` or `-`, nor a `.` followed by one. So `@ada` does not mention
+ * `ada-bot`, `ada.bot` or `adaïs`, but `thanks @ada.` does. Only the first 64 @s are read.
+ *
+ * Bounds (R8e-1): a candidate stops growing once its folded form is longer than any name can
+ * be (MAX_NAME_KEY), and only hashes are kept, so a message's index is at most 64 × 64 numbers
+ * however the text expands when folded.
+ */
+function buildMentionIndex(body) {
+  if (typeof body !== 'string' || !body.includes('@')) return NO_MENTIONS;
+  const hashes = [];
+  const text = Array.from(body.replace(/`[^`\n]*`/g, ' '));
+  const add = (i, j) => {
+    const k = nameKey(text.slice(i + 1, j).join(''));
+    if (Array.from(k).length > MAX_NAME_KEY) return false;
+    if (k) hashes.push(keyHash(k));
+    return true;
+  };
+  let scanned = 0;
+  for (let i = 0; i < text.length && scanned < MAX_MENTIONS_SCANNED; i++) {
+    if (text[i] !== '@') continue;
+    if (i > 0 && (NAME_CHAR.test(text[i - 1]) || text[i - 1] === '/' || text[i - 1] === '@')) continue;
+    if (!NAME_START.test(text[i + 1] || '')) continue;
+    scanned++;
+    const stop = Math.min(text.length, i + 1 + MENTION_SPAN);
+    for (let j = i + 2; j <= stop; j++) {
+      if (j < text.length) {
+        const c = text[j];
+        if (c === '@' || c === '\n') {
+          add(i, j);
+          break;
+        }
+        if (NAME_CHAR.test(c) || (c === '.' && NAME_CHAR.test(text[j + 1] || ''))) continue;
+      }
+      // Folding never makes a longer candidate shorter, so once one is too long, stop.
+      if (!add(i, j)) break;
+    }
+  }
+  if (!hashes.length) return NO_MENTIONS;
+  const sorted = Float64Array.from(new Set(hashes)).sort();
+  return sorted;
+}
+
+/** The mention index for a message object (kept with the message) or a body string. */
+function mentionIndex(messageOrBody) {
+  if (messageOrBody && typeof messageOrBody === 'object') {
+    let idx = mentionIndexes.get(messageOrBody);
+    if (!idx) {
+      idx = buildMentionIndex(messageOrBody.body);
+      mentionIndexes.set(messageOrBody, idx);
+    }
+    return idx;
+  }
+  // A bare string keeps only the last one, which covers checking one body against many names.
+  if (messageOrBody !== lastBody) {
+    lastIndex = buildMentionIndex(messageOrBody);
+    lastBody = messageOrBody;
+  }
+  return lastIndex;
+}
+
+/**
+ * Whether a message (or a body string) @mentions `who`, comparing names the way joins do
+ * (see buildMentionIndex).
+ */
+function mentionsName(messageOrBody, who) {
+  const target = nameKey(who);
+  if (!target || Array.from(target).length > MAX_NAME_KEY) return false;
+  const idx = mentionIndex(messageOrBody);
+  const h = keyHash(target);
+  let lo = 0;
+  let hi = idx.length - 1;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    if (idx[mid] === h) return true;
+    if (idx[mid] < h) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return false;
 }
 
 function cleanAwaiting(list, except) {
@@ -447,6 +564,7 @@ function addMessage(room, { author, party, body, turn_id, status, awaiting, stat
   }
   if (handTo.length) message.awaiting = handTo;
   room.messages.push(message);
+  mentionIndex(message);
 
   let nextAwaiting = turn.awaiting.filter((id) => !sameId(id, author));
   let nextState = turn.state === 'completed' || turn.state === 'dormant' ? 'open' : turn.state;
@@ -483,7 +601,6 @@ function markSeen(room, party, id) {
  */
 function inbox(party, id) {
   const key = rosterKey(party, id);
-  const mentionRe = new RegExp(`@${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`, 'i');
   const items = [];
   for (const room of openRooms.values()) {
     sweep(room);
@@ -492,7 +609,7 @@ function inbox(party, id) {
     const idx = seenId ? room.messages.findIndex((m) => m.id === seenId) : -1;
     const unread = room.messages.slice(idx + 1).filter((m) => !(m.party === party && sameId(m.author, id)));
     const awaited = turn.state === 'input-required' && awaits(room, turn.awaiting, party, id);
-    const mentions = unread.filter((m) => mentionRe.test(m.body)).length;
+    const mentions = unread.filter((m) => mentionsName(m, id)).length;
     const member = isMember(room, party, id);
     if (!awaited && !mentions && !(member && unread.length)) continue;
     const last = room.messages[room.messages.length - 1];
@@ -628,11 +745,18 @@ function assertIdFree(room, party, id) {
 }
 
 /**
- * Zero-width spaces, bidi controls and other invisible marks make a handle look like another
- * one (or display reversed). Joiners (U+200C, U+200D) stay allowed: scripts and emoji need them.
- * AI ids are ASCII-only already.
+ * Zero-width spaces, bidi controls, control characters and other invisible marks make a handle
+ * look like another one (or display reversed). Joiners (U+200C, U+200D) stay allowed: scripts
+ * and emoji need them. AI ids are ASCII-only already.
  */
-const INVISIBLE_RE = /[\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
+const INVISIBLE_RE = /[\p{Cc}\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
+
+/** A new human name: nothing invisible, not blank, and a comparison form of at most MAX_NAME_KEY. */
+function nameAllowed(handle) {
+  if (INVISIBLE_RE.test(handle)) return false;
+  const k = nameKey(handle);
+  return Boolean(k) && Array.from(k).length <= MAX_NAME_KEY;
+}
 
 function sameSecret(a, b) {
   if (typeof a !== 'string' || typeof b !== 'string' || a.length !== b.length) return false;
@@ -653,7 +777,7 @@ function assertCapacity(room) {
 function joinHuman(room, handle) {
   const key = rosterKey('human', handle);
   // New names only: a handle joined before these rules (e.g. restored from a snapshot) can still re-join.
-  if (!isMember(room, 'human', handle) && (INVISIBLE_RE.test(handle) || !nameKey(handle))) {
+  if (!isMember(room, 'human', handle) && !nameAllowed(handle)) {
     throw protocolError('invalid_handle');
   }
   assertIdFree(room, 'human', handle);
@@ -815,6 +939,9 @@ console.log(describePresenceTtl());
 module.exports = {
   nameKey,
   sameId,
+  mentionsName,
+  MAX_MENTIONS_SCANNED,
+  MAX_NAME_KEY,
   awaits,
   MAX_PARTIES,
   OPEN_WELCOME_ROOM_ID,
