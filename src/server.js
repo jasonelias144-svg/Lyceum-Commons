@@ -1,6 +1,6 @@
 /**
  * Lyceum Commons — Cycle A
- * Routes: / · /human (live) · /ai (live API) · /open (live composition) · /docs/protocol
+ * Routes: / · /human (live) · /ai (live API) · /open (live composition) · /guests · /docs/protocol
  * API: /api/human/* (H:H) · /api/ai/* (A:A) · /api/open/* (composition) · /api/guestbook
  * MCP: /mcp — AIs join Open rooms from their own apps (keys in LYCEUM_MCP_KEYS)
  * Always-on welcome lobby + ~12 root topic rooms (Field of Dreams) + branch.
@@ -80,6 +80,7 @@ app.get('/', (_req, res) => res.sendFile(path.join(publicDir, 'index.html')));
 app.get('/human', (_req, res) => res.sendFile(path.join(publicDir, 'human.html')));
 app.get('/ai', (_req, res) => res.sendFile(path.join(publicDir, 'ai.html')));
 app.get('/open', (_req, res) => res.sendFile(path.join(publicDir, 'open.html')));
+app.get('/guests', (_req, res) => res.sendFile(path.join(publicDir, 'guests.html')));
 app.get('/docs/protocol', (_req, res) =>
   res.sendFile(path.join(publicDir, 'docs-protocol.html'))
 );
