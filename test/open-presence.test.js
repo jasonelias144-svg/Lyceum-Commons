@@ -301,6 +301,8 @@ describe('Presence TTL', () => {
   it('entries restored without last_seen get one TTL from boot, then expire (the live lobby ghosts)', async () => {
     const lobby = openStore._openRooms.get('open-welcome');
     lobby.roster.set('human:old-ghost', { id: 'old-ghost', party: 'human', joined_at: '2026-09-24T17:00:00.000Z' });
+    // A held name (unclaimed names from before guest keys keep their stored time instead).
+    (lobby.members ??= {})['human:old-ghost'] = { owner: 'g-held', last_active: '2026-09-24T17:00:00.000Z' };
     await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'jason', party: 'human' });
     let read = await json('GET', '/api/open/rooms/open-welcome/messages?handle=jason');
     assert.deepEqual(read.data.roster.map((p) => p.id).sort(), ['jason', 'old-ghost']);
@@ -539,6 +541,7 @@ describe('Handoff 7 fixes', () => {
     assert.equal(read.status, 200);
     const lobby = openStore._openRooms.get('open-welcome');
     lobby.roster.set('human:old', { id: 'old', party: 'human', joined_at: '2026-09-24T17:00:00.000Z' });
+    (lobby.members ??= {})['human:old'] = { owner: 'g-held', last_active: '2026-09-24T17:00:00.000Z' };
     await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'qa-a', party: 'human' });
     const lr = await json('GET', '/api/open/rooms/open-welcome/messages?handle=qa-a');
     const old = lr.data.roster.find((p) => p.id === 'old');
