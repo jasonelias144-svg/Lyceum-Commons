@@ -18,6 +18,8 @@ const crypto = require('crypto');
 const { protocolError } = require('./errors');
 
 const MAX_PARTIES = 16;
+/** Distinct human names one guest key may hold across all rooms (the /guests page states it). */
+const MAX_NAMES_PER_GUEST = 5;
 const OPEN_WELCOME_ROOM_ID = 'open-welcome';
 const OPEN_WELCOME_TITLE = 'Open welcome lobby';
 const DEFAULT_PRESENCE_TTL_MS = 10 * 60 * 1000;
@@ -144,7 +146,10 @@ function resolveGuest(key) {
   return record ? record.gid : null;
 }
 
-/** Listeners for { type: 'claim' | 'release', room_id, owner, handle } (notify keeps subscriptions in step). */
+/**
+ * Listeners for { type: 'release', room_id, owner, handle } (notify drops that owner's
+ * subscriptions for the name in that room; owner null means the unclaimed ones a claim replaces).
+ */
 const guestListeners = [];
 
 function onGuestEvent(fn) {
@@ -287,6 +292,18 @@ function ownsHuman(room, handle, gid) {
 function holdsIn(room, owner, handle) {
   const rec = membersOf(room)[rosterKey('human', handle)];
   return Boolean(rec) && (rec.owner || null) === (owner || null);
+}
+
+/** The distinct exact human names this guest holds across all rooms. */
+function namesHeldBy(owner) {
+  const names = new Set();
+  if (!owner) return names;
+  for (const room of openRooms.values()) {
+    for (const [key, rec] of Object.entries(membersOf(room))) {
+      if (key.startsWith('human:') && rec && rec.owner === owner) names.add(key.slice('human:'.length));
+    }
+  }
+  return names;
 }
 
 /** True when this owner holds the exact human name in any room. */
@@ -1032,8 +1049,11 @@ function assertCapacity(room) {
  *
  * A held name answers only to the guest that owns it: anyone else, with or without a key, gets
  * the same generic handle_taken a lookalike gets. A membership from before guest keys (no
- * owner) is claimed by the first rejoin; a keyless rejoin mints a key and claims it in one step.
- * A key is minted only after every check has passed, so a refused join hands out nothing.
+ * owner) is claimed by the first rejoin, but never while the name is present: whoever is on the
+ * roster may be its real holder. A claim drops the name's old notification subscriptions in
+ * that room rather than handing them to the claimer. A keyless rejoin mints a key and claims in
+ * one step. One key holds at most MAX_NAMES_PER_GUEST distinct names across all rooms. A key is
+ * minted only after every check has passed, so a refused join hands out nothing.
  */
 function joinHuman(room, handle, gid = null) {
   const key = rosterKey('human', handle);
@@ -1048,18 +1068,30 @@ function joinHuman(room, handle, gid = null) {
   }
   assertIdFree(room, 'human', handle);
   const present = room.roster.has(key);
+  const claim = Boolean(rec) && !rec.owner;
+  if (claim && present) {
+    const ttl = presenceTtlMs();
+    const wait = ttl > 0 ? ` once it has been away for ${Math.ceil(ttl / 60000)} minutes` : ' once it has left';
+    throw identityError(
+      'handle_taken',
+      `That name is in use in this room right now. If it is yours from before guest keys, join with it again${wait}.`,
+    );
+  }
   if (!present) assertCapacity(room);
+  if (gid && !(rec && rec.owner === gid) && !guestHolds(gid, handle) && namesHeldBy(gid).size >= MAX_NAMES_PER_GUEST) {
+    throw protocolError('guest_name_limit');
+  }
   let guestKey = null;
   if (!gid) ({ key: guestKey, gid } = mintGuest());
   const at = nowIso();
-  const claimed = !rec || !rec.owner;
+  // Old subscriptions for an unclaimed name are dropped, not handed to the claimer.
+  if (claim) emitGuestEvent({ type: 'release', room_id: room.id, owner: null, handle });
   members[key] = { owner: gid, last_active: at };
   if (present) {
     touch(room, 'human', handle);
   } else {
     room.roster.set(key, { id: handle, party: 'human', joined_at: at, last_seen: at });
   }
-  if (rec && claimed) emitGuestEvent({ type: 'claim', room_id: room.id, owner: gid, handle });
   return { room, created: !present, guest_key: guestKey };
 }
 
@@ -1207,6 +1239,7 @@ ensureWelcomeLobby();
 console.log(describePresenceTtl());
 
 module.exports = {
+  MAX_NAMES_PER_GUEST,
   nameKey,
   sameId,
   mentionsName,
