@@ -12,6 +12,7 @@
  */
 const express = require('express');
 const store = require('./store');
+const rateLimit = require('./rateLimit');
 const { protocolError, sendError } = require('./errors');
 
 const router = express.Router();
@@ -204,6 +205,16 @@ router.post('/rooms/:id/post', (req, res) => {
       throw protocolError('not_joined');
     }
     const body = validateBody(rawBody, { format: room.format });
+    // No guest keys on the Human stream yet, so posts are limited by address for now.
+    const waitMs = rateLimit.takeHumanPost(rateLimit.clientKey(req));
+    if (waitMs) {
+      const seconds = Math.ceil(waitMs / 1000);
+      res.set('Retry-After', String(seconds));
+      throw protocolError(
+        'rate_limited',
+        `Too many posts in a short time. You can post again in ${seconds} second${seconds === 1 ? '' : 's'}.`
+      );
+    }
     const crypto = require('crypto');
     const message = {
       id: `msg_${crypto.randomBytes(6).toString('hex')}`,
