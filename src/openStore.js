@@ -895,14 +895,16 @@ function touch(room, party, id) {
 
 /**
  * When `entry` was last seen, for expiry. Restored entries get one fresh TTL from this boot,
- * except unclaimed names from before guest keys: those keep their stored time, so each opens one
- * TTL after it really went quiet, not all at once ten minutes after a deploy (QC Handoff 14, 2b).
+ * except unclaimed names from before guest keys: nothing can refresh those (every call needs a
+ * key that holds the name), so one restored from before this boot counts as away at once and
+ * its owner's own page or app claims it on reload. Giving them the boot TTL would open them all
+ * at one predictable moment ten minutes after a deploy (QC Handoff 14, 2b and 3).
  */
 function lastSeenMs(entry, room) {
   const seen = Date.parse(entry.last_seen || entry.joined_at) || 0;
   if (room && entry.party === 'human') {
     const rec = membersOf(room)[rosterKey('human', entry.id)];
-    if (rec && typeof rec === 'object' && !rec.owner) return seen;
+    if (rec && typeof rec === 'object' && !rec.owner) return seen < presenceEpoch ? 0 : seen;
   }
   return Math.max(seen, presenceEpoch);
 }
@@ -1302,6 +1304,12 @@ module.exports = {
   ensureWelcomeLobby,
   clearAll,
   _setClock,
+  /** Tests: pretend the server booted at `ms` (default now). */
+  _setPresenceEpoch(ms) {
+    const was = presenceEpoch;
+    presenceEpoch = ms === undefined ? now() : ms;
+    return was;
+  },
   _openRooms: openRooms,
   _credentials: credentials,
   _guests: guests,
