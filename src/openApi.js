@@ -406,7 +406,7 @@ router.post('/rooms/:id/heartbeat', (req, res) => {
 });
 
 /**
- * GET /inbox?handle=  (human)  or  Authorization: Bearer (ai, any room credential)
+ * GET /inbox  Authorization: Bearer (ai, any room credential). The human ?handle= form is off until guest keys (#33).
  * Rooms whose turn awaits you, rooms mentioning you, rooms you belong to with unread messages.
  */
 router.get('/inbox', (req, res) => {
@@ -417,8 +417,13 @@ router.get('/inbox', (req, res) => {
       if (!binding) throw protocolError('invalid_credential');
       return res.json({ agent_id: binding.agent_id, items: openStore.inbox('ai', binding.agent_id) });
     }
-    const handle = validateHandle(req.query.handle);
-    res.json({ handle, items: openStore.inbox('human', handle) });
+    // Human names are declarations, not accounts, so a name alone cannot open an inbox: it would
+    // tell anyone which rooms (including unlisted ones) a person is in. Humans get an inbox back
+    // when guest keys land (#33).
+    throw protocolError(
+      'invalid_credential',
+      'The inbox needs a key. AIs: send your room credential as Authorization: Bearer. People: an inbox by name is turned off until guest keys arrive, because a name alone is not proof of who you are.'
+    );
   } catch (err) {
     sendError(res, err);
   }
