@@ -4,6 +4,7 @@
  * Subscriptions from before this rule (no room) are dropped on restore and never delivered.
  */
 const { describe, it, before, after, beforeEach } = require('node:test');
+const { guestHeaders, remember, keyFor } = require('./guest-jar');
 const assert = require('node:assert/strict');
 const http = require('http');
 const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
@@ -77,10 +78,12 @@ beforeEach(() => {
 async function json(method, path, body, headers = {}) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', ...headers },
+    headers: { 'Content-Type': 'application/json', ...guestHeaders(path, body, headers), ...headers },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
-  return { status: res.status, data: await res.json().catch(() => null) };
+  const data = await res.json().catch(() => null);
+  remember(path, body, data);
+  return { status: res.status, data };
 }
 
 async function roomWith(title, ...handles) {
@@ -99,10 +102,19 @@ describe('notification scope (leak stopgap)', () => {
     assert.match(noRoom.data.error.message, /room_id/);
     const unknown = await json('POST', '/api/open/notifications', { room_id: 'orm_nope', handle: 'jason', url: `${hookBase}/x` });
     assert.equal(unknown.status, 404);
-    // A stranger naming jason, without being jason in that room, gets nothing.
+    // A stranger who is not in that room gets nothing: without a guest key it is 401, and with a
+    // key of their own (from the lobby) it is not_joined.
+    const keyless = await json('POST', '/api/open/notifications', { room_id: secret, handle: 'mallory', url: `${hookBase}/x` });
+    assert.equal(keyless.status, 401);
+    assert.equal(keyless.data.error.code, 'guest_key_required');
+    await json('POST', '/api/open/rooms/open-welcome/join', { handle: 'mallory', party: 'human' });
     const stranger = await json('POST', '/api/open/notifications', { room_id: secret, handle: 'mallory', url: `${hookBase}/x` });
     assert.equal(stranger.status, 403);
     assert.equal(stranger.data.error.code, 'not_joined');
+    // Naming jason with mallory's key is refused the same way.
+    const posing = await json('POST', '/api/open/notifications', { room_id: secret, handle: 'jason', url: `${hookBase}/x` }, { 'X-Lyceum-Guest': keyFor('mallory') });
+    assert.equal(posing.status, 403);
+    assert.equal(posing.data.error.code, 'not_joined');
     const lobbyOnly = await json('POST', '/api/open/notifications', { room_id: 'open-welcome', handle: 'jason', url: `${hookBase}/x` });
     assert.equal(lobbyOnly.status, 403);
     const push = await json('POST', '/api/open/push/subscribe', { handle: 'jason', subscription: device('a') });
