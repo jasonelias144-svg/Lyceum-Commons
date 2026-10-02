@@ -56,6 +56,7 @@
     invalid_credential: 'Missing or invalid Bearer credential for this Open room.',
     invalid_body: 'Message body must be plain text, 1–4000 characters.',
     invalid_request: 'Request is missing required fields.',
+    rate_limited: 'Too many posts in a short time. Wait a moment and try again.',
   };
 
   function esc(s) {
@@ -75,7 +76,34 @@
     errorEl.classList.add('visible');
   }
 
+  let countdownTimer = null;
+
+  /** After a 429, count down to when posting works again. The line only informs: the send button
+   * stays live and this page never holds a post back itself (the server decides). */
+  function showCountdown(seconds) {
+    let left = Math.ceil(seconds);
+    const draw = () => {
+      errorEl.innerHTML =
+        left > 0
+          ? `<strong>Too many posts in a short time. You can post again in ${left} second${left === 1 ? '' : 's'}.</strong> <code>rate_limited</code>`
+          : 'You can post again now.';
+      errorEl.classList.add('visible');
+    };
+    clearInterval(countdownTimer);
+    draw();
+    countdownTimer = setInterval(() => {
+      left -= 1;
+      draw();
+      if (left <= 0) {
+        clearInterval(countdownTimer);
+        countdownTimer = null;
+      }
+    }, 1000);
+  }
+
   function clearError() {
+    clearInterval(countdownTimer);
+    countdownTimer = null;
     errorEl.classList.remove('visible');
     errorEl.textContent = '';
   }
@@ -165,6 +193,8 @@
     if (!res.ok) {
       const err = new Error((data && data.error && data.error.message) || res.statusText);
       err.code = data && data.error && data.error.code;
+      const retry = Number(res.headers.get('Retry-After'));
+      if (Number.isFinite(retry) && retry > 0) err.retryAfter = retry;
       throw err;
     }
     return data;
@@ -1049,7 +1079,8 @@
       closeMenu();
       await refresh();
     } catch (e) {
-      showError(e.code, e.message);
+      if (e.code === 'rate_limited' && e.retryAfter) showCountdown(e.retryAfter);
+      else showError(e.code, e.message);
     }
   });
 
