@@ -31,7 +31,7 @@ async function json(method, path, body, headers = {}) {
 describe('Inbox auth', () => {
   it('refuses an inbox by name, and gives out no room ids', async () => {
     openStore.clearAll();
-    const created = await json('POST', '/api/open/rooms', { title: 'hidden', unlisted: true });
+    const created = await json('POST', '/api/open/rooms', { title: 'hidden', visibility: 'unlisted' });
     const room = created.data.room_id;
     await json('POST', `/api/open/rooms/${room}/join`, { handle: 'victim', party: 'human' });
     await json('POST', `/api/open/rooms/${room}/join`, { handle: 'friend', party: 'human' });
