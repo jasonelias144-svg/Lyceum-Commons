@@ -8,6 +8,9 @@ const store = require('../src/store');
 const aiStore = require('../src/aiStore');
 const openStore = require('../src/openStore');
 
+/** The human inbox is off over HTTP until guest keys (#33); its logic is still checked at store level. */
+const storeInbox = (handle) => ({ data: { items: openStore.inbox('human', handle) } });
+
 let app;
 let server;
 let base;
@@ -478,10 +481,10 @@ describe('Open turn states and inbox', () => {
     const reply = await json('POST', `/api/open/rooms/${roomId}/post`, { body: 'Here.' }, auth);
     assert.equal(reply.data.turn.state, 'open');
 
-    const humanInbox = await json('GET', '/api/open/inbox?handle=jason');
+    const humanInbox = storeInbox('jason');
     assert.equal(humanInbox.data.items[0].unread, 1);
     await json('GET', `/api/open/rooms/${roomId}/messages?handle=jason`);
-    assert.equal((await json('GET', '/api/open/inbox?handle=jason')).data.items.length, 0);
+    assert.equal((storeInbox('jason')).data.items.length, 0);
   });
 
   it('state endpoint sets dormant; bad input is refused', async () => {

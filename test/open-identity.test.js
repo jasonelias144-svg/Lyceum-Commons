@@ -11,6 +11,9 @@ const { Client } = require('@modelcontextprotocol/sdk/client/index.js');
 const { StreamableHTTPClientTransport } = require('@modelcontextprotocol/sdk/client/streamableHttp.js');
 const openStore = require('../src/openStore');
 
+/** The human inbox is off over HTTP until guest keys (#33); its logic is still checked at store level. */
+const humanInbox = (handle) => ({ data: { items: openStore.inbox('human', handle) } });
+
 const MCP_KEY = 'rr2-test-key-0123456789abcdef00';
 const TTL = openStore.DEFAULT_PRESENCE_TTL_MS;
 const MIN = 60 * 1000;
@@ -365,7 +368,7 @@ describe('Follow-ups from Recheck 8b', () => {
     assert.equal(ai.status, 200);
     const posted = await json('POST', `/api/open/rooms/${room}/post`, { handle: 'keeper', body: 'over to you', awaiting: ['twin'] });
     assert.equal(posted.status, 201);
-    const human = await json('GET', `/api/open/inbox?handle=twin`);
+    const human = humanInbox('twin');
     const hItem = human.data.items.find((i) => i.room_id === room);
     assert.ok(hItem, 'the kept human still sees the room (unread)');
     assert.equal(hItem.your_turn, false);
