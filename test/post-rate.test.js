@@ -89,4 +89,61 @@ describe('Post rate limit (R12-1b)', () => {
       process.env.OPEN_POST_RATE_PER_MIN = '3';
     }
   });
+
+  describe('client address behind Railway (live QC on 3acf30f)', () => {
+    const header = process.env.OPEN_CLIENT_IP_HEADER;
+    beforeEach(() => {
+      process.env.OPEN_CLIENT_IP_HEADER = 'x-real-ip';
+    });
+    after(() => {
+      if (header === undefined) delete process.env.OPEN_CLIENT_IP_HEADER;
+      else process.env.OPEN_CLIENT_IP_HEADER = header;
+    });
+
+    async function room() {
+      const a = (await json('POST', '/api/open/rooms', { title: 'a' })).data.room_id;
+      await json('POST', `/api/open/rooms/${a}/join`, { handle: 'p', party: 'human' });
+      return a;
+    }
+
+    it('keys on X-Real-IP even when the internal hop in X-Forwarded-For changes every request', async () => {
+      const a = await room();
+      const post = (i, ip) =>
+        json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: `m${i}` }, {
+          'X-Real-IP': ip,
+          'X-Forwarded-For': `${ip}, 100.64.${i}.${i + 1}`,
+        });
+      for (let i = 0; i < 3; i++) assert.equal((await post(i, '203.0.113.7')).status, 201);
+      const res = await post(3, '203.0.113.7');
+      assert.equal(res.status, 429);
+      assert.ok(Number(res.headers.get('retry-after')) >= 1);
+      assert.equal((await post(4, '198.51.100.9')).status, 201, 'another client has its own allowance');
+    });
+
+    it('falls back to req.ip when the header is missing', async () => {
+      const a = await room();
+      for (let i = 0; i < 3; i++) {
+        assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: `m${i}` })).status, 201);
+      }
+      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: 'x' })).status, 429);
+    });
+
+    it('defaults to X-Real-IP only on Railway, and OPEN_CLIENT_IP_HEADER=none turns it off', () => {
+      const railway = process.env.RAILWAY_ENVIRONMENT;
+      try {
+        delete process.env.OPEN_CLIENT_IP_HEADER;
+        delete process.env.RAILWAY_ENVIRONMENT;
+        assert.equal(rateLimit.clientIpHeader(), null);
+        process.env.RAILWAY_ENVIRONMENT = 'production';
+        assert.equal(rateLimit.clientIpHeader(), 'x-real-ip');
+        process.env.OPEN_CLIENT_IP_HEADER = 'none';
+        assert.equal(rateLimit.clientIpHeader(), null);
+        process.env.OPEN_CLIENT_IP_HEADER = 'CF-Connecting-IP';
+        assert.equal(rateLimit.clientIpHeader(), 'cf-connecting-ip');
+      } finally {
+        if (railway === undefined) delete process.env.RAILWAY_ENVIRONMENT;
+        else process.env.RAILWAY_ENVIRONMENT = railway;
+      }
+    });
+  });
 });

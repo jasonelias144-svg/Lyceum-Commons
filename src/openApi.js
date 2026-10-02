@@ -31,11 +31,11 @@ router.use((req, res, next) => {
 
 /**
  * One post from this client's address, or a 429 with Retry-After (R12-1b). Keyed by address
- * because names and credentials are free to mint. Behind Railway's proxy, `trust proxy` (see
- * server.js) makes req.ip the caller's address rather than the proxy's.
+ * because names and credentials are free to mint. The address comes from rateLimit.clientKey:
+ * Railway's X-Real-IP there, req.ip elsewhere.
  */
 function takePost(req, res) {
-  const waitMs = rateLimit.takePost(`ip:${req.ip}`);
+  const waitMs = rateLimit.takePost(rateLimit.clientKey(req));
   if (!waitMs) return;
   res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
   throw protocolError('rate_limited');
