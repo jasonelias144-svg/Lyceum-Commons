@@ -24,8 +24,9 @@ function perMinute() {
  */
 function clientIpHeader() {
   const raw = process.env.OPEN_CLIENT_IP_HEADER;
-  if (raw !== undefined && raw !== '') {
-    const name = raw.trim().toLowerCase();
+  const name = raw === undefined ? '' : raw.trim().toLowerCase();
+  if (!name && raw) warnUnknownHeader('(blank)', 'is set but blank, so it counts as unset. Remove it, or name the header');
+  if (name) {
     if (name === 'none') return null;
     if (!KNOWN_HEADERS.has(name)) warnUnknownHeader(name);
     return name;
@@ -37,16 +38,30 @@ function clientIpHeader() {
  * Client-address headers that real proxies set. A name outside this list is still used (a custom
  * proxy may have its own), but it is likely a typo, and a header no request carries sends every
  * post into the one shared fallback bucket, so the whole site would share one allowance.
+ * X-Forwarded-For is left off on purpose: behind most proxies its first value is whatever the
+ * client sent, so keying on it lets anyone pick a fresh address per post.
  */
 const KNOWN_HEADERS = new Set([
   'x-real-ip', 'cf-connecting-ip', 'true-client-ip', 'fly-client-ip', 'x-client-ip',
-  'x-forwarded-for', 'x-cluster-client-ip', 'fastly-client-ip', 'x-azure-clientip',
+  'x-cluster-client-ip', 'fastly-client-ip', 'x-azure-clientip',
 ]);
 let warnedHeader = null;
 
-function warnUnknownHeader(name) {
+function warnUnknownHeader(name, blank) {
   if (warnedHeader === name) return;
   warnedHeader = name;
+  if (blank) {
+    console.warn(`WARNING: OPEN_CLIENT_IP_HEADER ${blank}.`);
+    return;
+  }
+  if (name === 'x-forwarded-for') {
+    console.warn(
+      'WARNING: OPEN_CLIENT_IP_HEADER is "x-forwarded-for". Behind most proxies its first value is ' +
+        'whatever the client sent, so anyone can pick a fresh address per post and skip the limit. ' +
+        'Use a header your proxy overwrites (on Railway, x-real-ip).'
+    );
+    return;
+  }
   console.warn(
     `WARNING: OPEN_CLIENT_IP_HEADER is "${name}", which is not a header proxies usually set. ` +
       'If no request carries it, every post shares ONE rate-limit allowance for the whole site. ' +
