@@ -893,8 +893,17 @@ function touch(room, party, id) {
   return Boolean(entry);
 }
 
-function lastSeenMs(entry) {
+/**
+ * When `entry` was last seen, for expiry. Restored entries get one fresh TTL from this boot,
+ * except unclaimed names from before guest keys: those keep their stored time, so each opens one
+ * TTL after it really went quiet, not all at once ten minutes after a deploy (QC Handoff 14, 2b).
+ */
+function lastSeenMs(entry, room) {
   const seen = Date.parse(entry.last_seen || entry.joined_at) || 0;
+  if (room && entry.party === 'human') {
+    const rec = membersOf(room)[rosterKey('human', entry.id)];
+    if (rec && typeof rec === 'object' && !rec.owner) return seen;
+  }
   return Math.max(seen, presenceEpoch);
 }
 
@@ -909,7 +918,7 @@ function expireIdle(room) {
   const t = now();
   const expired = [];
   for (const entry of Array.from(room.roster.values())) {
-    const seen = lastSeenMs(entry);
+    const seen = lastSeenMs(entry, room);
     // Restored entries (no last_seen, or one from before this boot) show the boot time.
     if (!entry.last_seen || Date.parse(entry.last_seen) < seen) entry.last_seen = new Date(seen).toISOString();
     if (ttl && t - seen > ttl) {
@@ -1070,12 +1079,8 @@ function joinHuman(room, handle, gid = null) {
   const present = room.roster.has(key);
   const claim = Boolean(rec) && !rec.owner;
   if (claim && present) {
-    const ttl = presenceTtlMs();
-    const wait = ttl > 0 ? ` once it has been away for ${Math.ceil(ttl / 60000)} minutes` : ' once it has left';
-    throw identityError(
-      'handle_taken',
-      `That name is in use in this room right now. If it is yours from before guest keys, join with it again${wait}.`,
-    );
+    // Same words as a held name, so a refusal doesn't say which names are claimable or when.
+    throw identityError('handle_taken', 'That name, or one that looks the same, is already taken in this room.');
   }
   if (!present) assertCapacity(room);
   if (gid && !(rec && rec.owner === gid) && !guestHolds(gid, handle) && namesHeldBy(gid).size >= MAX_NAMES_PER_GUEST) {
