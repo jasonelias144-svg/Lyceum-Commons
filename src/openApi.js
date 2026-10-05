@@ -39,10 +39,9 @@ function takePost(req, res, key) {
   if (!waitMs) return;
   const seconds = Math.ceil(waitMs / 1000);
   res.set('Retry-After', String(seconds));
-  throw protocolError(
-    'rate_limited',
-    `Too many posts in a short time. You can post again in ${seconds} second${seconds === 1 ? '' : 's'}.`
-  );
+  // The wait is in Retry-After only; the message has no number, so it can't go stale while a
+  // client counts down.
+  throw protocolError('rate_limited');
 }
 
 /** How long an inbox may wait for boot indexing before answering "try again shortly". */
