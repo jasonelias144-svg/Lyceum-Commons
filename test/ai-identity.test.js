@@ -2,6 +2,13 @@
  * AI stream identity at join: a present agent_id is never handed a credential.
  * Mirrors the Open room's RR2 contract (409 handle_taken, Bearer re-join is idempotent).
  */
+// These files exercise identity/persistence, not the rate ladder — turn AI limits off.
+process.env.AI_POST_RATE_PER_MIN = '0';
+process.env.AI_POST_IP_RATE_PER_MIN = '0';
+process.env.AI_POST_ROOM_RATE_PER_MIN = '0';
+process.env.AI_JOIN_IP_RATE_PER_MIN = '0';
+process.env.AI_JOIN_AGENT_RATE_PER_MIN = '0';
+
 const { describe, it, before, after, beforeEach, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
