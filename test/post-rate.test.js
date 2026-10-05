@@ -498,7 +498,16 @@ describe('Post rate limit (R12-1b)', () => {
   });
 
   describe('knobs and cost (QC Handoff 19)', () => {
-    const KNOBS = ['OPEN_POST_NEW_KEY_BURST', 'OPEN_POST_RATE_PER_MIN', 'OPEN_POST_NEW_KEY_RAMP_MS'];
+    const KNOBS = [
+      'OPEN_POST_NEW_KEY_BURST',
+      'OPEN_POST_RATE_PER_MIN',
+      'OPEN_POST_NEW_KEY_RAMP_MS',
+      'OPEN_POST_IP_RATE_PER_MIN',
+      'HUMAN_POST_RATE_PER_MIN',
+      'HUMAN_LIVE_POST_RATE_PER_MIN',
+      'HUMAN_BOARD_POST_RATE_PER_MIN',
+      'HUMAN_POST_IP_RATE_PER_MIN',
+    ];
     let saved;
     let warn;
     let warnings;
@@ -541,6 +550,41 @@ describe('Post rate limit (R12-1b)', () => {
         process.env.OPEN_POST_RATE_PER_MIN = '0.5';
         assert.equal(rateLimit.takePost('mcp:x'), 0);
         assert.equal(warnings.filter((w) => w.includes('OPEN_POST_RATE_PER_MIN')).length, 1);
+      } finally {
+        restore();
+      }
+    });
+
+    it('checkKnobs warns once at boot for a bad knob; a later read does not warn again', () => {
+      try {
+        rateLimit._reset();
+        process.env.OPEN_POST_RATE_PER_MIN = 'nope';
+        warnings.length = 0;
+        rateLimit.checkKnobs();
+        assert.equal(warnings.filter((w) => w.includes('OPEN_POST_RATE_PER_MIN')).length, 1);
+        // A later post that reads the same knob must not warn again.
+        assert.equal(rateLimit.takePost('mcp:x'), 0);
+        assert.equal(warnings.filter((w) => w.includes('OPEN_POST_RATE_PER_MIN')).length, 1);
+      } finally {
+        restore();
+      }
+    });
+
+    it('checkKnobs does not warn for valid or unset knobs', () => {
+      try {
+        rateLimit._reset();
+        delete process.env.OPEN_POST_RATE_PER_MIN;
+        delete process.env.OPEN_POST_IP_RATE_PER_MIN;
+        delete process.env.OPEN_POST_NEW_KEY_BURST;
+        delete process.env.OPEN_POST_NEW_KEY_RAMP_MS;
+        delete process.env.HUMAN_POST_RATE_PER_MIN;
+        delete process.env.HUMAN_LIVE_POST_RATE_PER_MIN;
+        delete process.env.HUMAN_BOARD_POST_RATE_PER_MIN;
+        delete process.env.HUMAN_POST_IP_RATE_PER_MIN;
+        process.env.OPEN_POST_IP_RATE_PER_MIN = '120';
+        warnings.length = 0;
+        rateLimit.checkKnobs();
+        assert.equal(warnings.length, 0);
       } finally {
         restore();
       }

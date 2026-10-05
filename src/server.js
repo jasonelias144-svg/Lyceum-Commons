@@ -22,6 +22,7 @@ const store = require('./store');
 const aiStore = require('./aiStore');
 const openStore = require('./openStore');
 const persist = require('./persist');
+const rateLimit = require('./rateLimit');
 
 const app = express();
 // Railway puts one proxy in front of the app; trusting that hop makes req.ip the caller's
@@ -93,6 +94,8 @@ app.use((err, _req, res, _next) => {
 });
 
 if (require.main === module) {
+  // Rate knobs: warn once at boot for a bad value (same path as the OPEN_CLIENT_IP_HEADER check).
+  rateLimit.checkKnobs();
   persist.installShutdownHooks();
   app.listen(PORT, () => {
     console.log(

@@ -201,6 +201,17 @@ describe('Room format live|board', () => {
     assert.equal(/join\(seat\.roomId[\s\S]*saveSeat\(seat\.handle, ''\)/.test(js), false);
   });
 
+  it('/human client: Retry-After countdown on rate_limited (mirrors Open)', async () => {
+    const js = await (await fetch(`${base}/js/human.js`)).text();
+    assert.match(js, /Retry-After/);
+    assert.match(js, /showCountdown/);
+    assert.match(js, /You can post again now\./);
+    assert.match(js, /Try again in \$\{left\} second/);
+    assert.match(js, /rate_limited/);
+    // Poll must not wipe a running countdown (same guard as open.js).
+    assert.match(js, /if\s*\(\s*!countdownTimer\s*\)\s*clearError\s*\(/);
+  });
+
   it('/human client W-4: silentRejoin prefers this tab state.roomId/handle over shared seat LS', async () => {
     const js = await (await fetch(`${base}/js/human.js`)).text();
     // Must prefer in-memory state so another tab's stored seat cannot switch room/name.
