@@ -9,7 +9,10 @@
  *  - per address: every key from one address shares OPEN_POST_IP_RATE_PER_MIN (120), so minting
  *    keys doesn't help; requests with no trustworthy address share one fallback bucket at the
  *    per-key rate;
- *  - Human stream (/api/human, no guest keys yet): HUMAN_POST_RATE_PER_MIN (30) per address.
+ *  - Human stream (/api/human): with a guest key, the poster's key (live HUMAN_LIVE_POST_RATE_PER_MIN
+ *    default 45, board HUMAN_BOARD_POST_RATE_PER_MIN default 20) under HUMAN_POST_IP_RATE_PER_MIN
+ *    (120) per address; without a key, address alone at HUMAN_POST_RATE_PER_MIN (30). New Human
+ *    keys use the same markNew ramp as Open.
  * A refusal is a 429 with Retry-After and a plain message; nothing is delayed or dropped silently.
  * OPEN_POST_RATE_PER_MIN=0 turns the Open and MCP limits off.
  */
@@ -317,10 +320,39 @@ function takeOpenPost(ipKey, key) {
   ]);
 }
 
-/** Human stream posts (/api/human) have no guest key yet, so they are keyed by address alone,
- * in their own buckets at HUMAN_POST_RATE_PER_MIN (default 30; 0 turns it off). */
-function takeHumanPost(ipKey) {
-  return take([{ key: `human:${ipKey}`, limit: envNumber('HUMAN_POST_RATE_PER_MIN', DEFAULT_PER_MIN) }]);
+/** Default Human live posts per minute for one guest key (humane for a fast typist). */
+const DEFAULT_HUMAN_LIVE_PER_MIN = 45;
+/** Default Human board posts per minute for one guest key. */
+const DEFAULT_HUMAN_BOARD_PER_MIN = 20;
+/** Default Human address ceiling across every key from one address. */
+const DEFAULT_HUMAN_IP_PER_MIN = 120;
+
+/**
+ * One Human post. With `key` (a `human:guest:…` id from the request's guest key): the per-key
+ * bucket at the live or board rate, under HUMAN_POST_IP_RATE_PER_MIN (default 120) for the
+ * address, with new keys on the shared markNew ramp. Without `key`: address alone at
+ * HUMAN_POST_RATE_PER_MIN (default 30; 0 turns that address-only path off), as #46 shipped.
+ * HUMAN_LIVE_POST_RATE_PER_MIN / HUMAN_BOARD_POST_RATE_PER_MIN / HUMAN_POST_IP_RATE_PER_MIN = 0
+ * turns the matching keyed rung off.
+ */
+function takeHumanPost(ipKey, key, { format } = {}) {
+  if (!key) {
+    return take([{ key: `human:${ipKey}`, limit: envNumber('HUMAN_POST_RATE_PER_MIN', DEFAULT_PER_MIN) }]);
+  }
+  const liveDefault = envNumber('HUMAN_POST_RATE_PER_MIN', DEFAULT_HUMAN_LIVE_PER_MIN);
+  const perKey =
+    format === 'live'
+      ? envNumber('HUMAN_LIVE_POST_RATE_PER_MIN', liveDefault)
+      : envNumber('HUMAN_BOARD_POST_RATE_PER_MIN', DEFAULT_HUMAN_BOARD_PER_MIN);
+  if (!perKey && ipKey === FALLBACK_KEY) return 0;
+  const ipLimit =
+    ipKey === FALLBACK_KEY
+      ? perKey || envNumber('HUMAN_POST_RATE_PER_MIN', DEFAULT_PER_MIN)
+      : envNumber('HUMAN_POST_IP_RATE_PER_MIN', DEFAULT_HUMAN_IP_PER_MIN);
+  return take([
+    { key: ipKey === FALLBACK_KEY ? `human:${FALLBACK_KEY}` : `human:${ipKey}`, limit: ipLimit },
+    { key, limit: perKey, bornAt: bornAt(key, clock()) },
+  ].filter((s) => s.limit > 0));
 }
 
 /** Drops buckets that have refilled completely (a full bucket behaves the same as a new one,
@@ -370,6 +402,9 @@ module.exports = {
   DEFAULT_IP_PER_MIN,
   DEFAULT_NEW_KEY_BURST,
   DEFAULT_NEW_KEY_RAMP_MS,
+  DEFAULT_HUMAN_LIVE_PER_MIN,
+  DEFAULT_HUMAN_BOARD_PER_MIN,
+  DEFAULT_HUMAN_IP_PER_MIN,
   _reset,
   _setClock,
   _buckets: buckets,
