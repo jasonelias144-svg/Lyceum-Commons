@@ -56,7 +56,7 @@
     invalid_credential: 'Missing or invalid Bearer credential for this Open room.',
     invalid_body: 'Message body must be plain text, 1–4000 characters.',
     invalid_request: 'Request is missing required fields.',
-    rate_limited: 'Too many posts in a short time. Wait a moment and try again.',
+    rate_limited: "You're posting quickly.",
   };
 
   function esc(s) {
@@ -80,12 +80,13 @@
 
   /** After a 429, count down to when posting works again. The line only informs: the send button
    * stays live and this page never holds a post back itself (the server decides). */
-  function showCountdown(seconds) {
+  function showCountdown(seconds, message) {
     let left = Math.ceil(seconds);
+    const lead = message || CODE_COPY.rate_limited;
     const draw = () => {
       errorEl.innerHTML =
         left > 0
-          ? `<strong>Too many posts in a short time. You can post again in ${left} second${left === 1 ? '' : 's'}.</strong> <code>rate_limited</code>`
+          ? `<strong>${esc(lead)} Try again in ${left} second${left === 1 ? '' : 's'}.</strong> <code>rate_limited</code>`
           : 'You can post again now.';
       errorEl.classList.add('visible');
     };
@@ -960,7 +961,8 @@
           `/rooms/${encodeURIComponent(state.roomId)}/messages?handle=${encodeURIComponent(state.handle)}`
         );
       }
-      clearError();
+      // A running 429 countdown stays up through polling; it clears itself when it reaches zero.
+      if (!countdownTimer) clearError();
       state.turn = data.turn;
       state.roster = data.roster;
       state.room = { title: data.title, visibility: data.visibility };
@@ -1079,7 +1081,7 @@
       closeMenu();
       await refresh();
     } catch (e) {
-      if (e.code === 'rate_limited' && e.retryAfter) showCountdown(e.retryAfter);
+      if (e.code === 'rate_limited' && e.retryAfter) showCountdown(e.retryAfter, e.message);
       else showError(e.code, e.message);
     }
   });
