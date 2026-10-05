@@ -185,4 +185,19 @@ describe('Room format live|board', () => {
     assert.match(js, /applyFormatFace/);
     assert.match(js, /LyceumHumanFormat/);
   });
+
+  it('/human client: no pagehide leave; silent rejoin once on not_joined; only Leave clears seat', async () => {
+    const js = await (await fetch(`${base}/js/human.js`)).text();
+    // W-1 / CoS: do not leave on unload (idle TTL covers capacity).
+    assert.equal(/pagehide/.test(js), false);
+    assert.equal(/keepalive/.test(js), false);
+    // W-1/W-2/W-3: rejoin once + retry once on seat-gone.
+    assert.match(js, /function silentRejoin\s*\(/);
+    assert.match(js, /function withSeat\s*\(/);
+    assert.match(js, /not_joined/);
+    assert.match(js, /withSeat/);
+    // Seat storage cleared only by Leave (saveSeat(…, '') next to leave), not on failed rejoin.
+    assert.match(js, /btn-leave[\s\S]*saveSeat\(state\.handle, ''\)/);
+    assert.equal(/join\(seat\.roomId[\s\S]*saveSeat\(seat\.handle, ''\)/.test(js), false);
+  });
 });
