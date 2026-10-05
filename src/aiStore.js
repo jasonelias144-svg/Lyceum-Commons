@@ -372,6 +372,32 @@ function hasLiveCredential(room, entry) {
 }
 
 /**
+ * Whether a join would write. Returns 'skip' for an idempotent Bearer re-join (nothing
+ * written — do not charge the join budget). Returns 'charge' when a fresh mint or reclaim
+ * will write. Throws handle_taken / room_full the same way joinAgent would, so those codes
+ * keep precedence over rate_limited.
+ */
+function prepareJoin(room, agentId, auth = {}) {
+  if (room.roster.has(agentId)) {
+    const existing = room.roster.get(agentId);
+    if (holdsCredential(room, existing, auth.credential)) return 'skip';
+    if (hasLiveCredential(room, existing)) {
+      throw identityError(
+        'handle_taken',
+        `${agentId} is already present in this room. Re-join with its Bearer credential, or join after it leaves.`
+      );
+    }
+    return 'charge';
+  }
+  if (room.roster.size >= MAX_PARTIES) {
+    const err = new Error('room_full');
+    err.code = 'room_full';
+    throw err;
+  }
+  return 'charge';
+}
+
+/**
  * Join (or re-join) an agent. Returns { room, credential, created: boolean }.
  *
  * The join route is unauthenticated, so an agent that is already present never has a
@@ -462,6 +488,7 @@ module.exports = {
   getRoom,
   listRoster,
   joinAgent,
+  prepareJoin,
   resolveCredential,
   appendMessage,
   leaveAgent,
