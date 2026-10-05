@@ -13,8 +13,15 @@
  *    default 45, board HUMAN_BOARD_POST_RATE_PER_MIN default 20) under HUMAN_POST_IP_RATE_PER_MIN
  *    (120) per address; without a key, address alone at HUMAN_POST_RATE_PER_MIN (30). New Human
  *    keys use the same markNew ramp as Open.
+ *  - AI stream (/api/ai): separate knobs — per credential AI_POST_RATE_PER_MIN (120), per address
+ *    AI_POST_IP_RATE_PER_MIN (120), per room AI_POST_ROOM_RATE_PER_MIN (240); new credentials start
+ *    at AI_POST_NEW_KEY_BURST (10) and ramp over AI_POST_NEW_KEY_RAMP_MS (15 min), or earn full rate
+ *    after AI_POST_EARN_OUT_POSTS (50) accepted posts; joins at AI_JOIN_IP_RATE_PER_MIN (12) per
+ *    address and AI_JOIN_AGENT_RATE_PER_MIN (6) per agent_id. Open-composition AI stays on Open's
+ *    30/min bucket.
  * A refusal is a 429 with Retry-After and a plain message; nothing is delayed or dropped silently.
- * OPEN_POST_RATE_PER_MIN=0 turns the Open and MCP limits off.
+ * OPEN_POST_RATE_PER_MIN=0 turns the Open and MCP limits off. AI_POST_RATE_PER_MIN=0 turns the AI
+ * post limits off.
  */
 const DEFAULT_PER_MIN = 30;
 /** Buckets that have refilled completely are dropped once there are this many keys. */
@@ -203,10 +210,14 @@ function ipPerMinute() {
  * burst and earns the full rate over the ramp, so minting keys buys little. bornAt null means an
  * established key: full rate.
  */
-function allowance(limit, bornAt, t) {
+function allowance(limit, bornAt, t, knobs) {
   if (bornAt === null || bornAt === undefined || !Number.isFinite(bornAt)) return limit;
-  const burst = envNumber('OPEN_POST_NEW_KEY_BURST', DEFAULT_NEW_KEY_BURST, 1);
-  const ramp = rampMs();
+  const burst = knobs
+    ? envNumber(knobs.burstName, knobs.burstDefault, 1)
+    : envNumber('OPEN_POST_NEW_KEY_BURST', DEFAULT_NEW_KEY_BURST, 1);
+  const ramp = knobs
+    ? envNumber(knobs.rampName, knobs.rampDefault)
+    : rampMs();
   if (burst >= limit || !ramp) return limit;
   const age = Math.max(0, t - bornAt);
   return Math.min(limit, burst + ((limit - burst) * age) / ramp);
@@ -232,10 +243,13 @@ function markNew(key) {
   // A Map iterates in insertion order and every entry is (re)inserted at its birth, so the oldest
   // births come first: drop expired ones from the front and stop at the first live one. Each entry
   // is dropped at most once, so a flood of joins costs O(1) each rather than a scan per join.
-  const ramp = rampMs();
+  // Drop expired births using the longer Open/AI ramp so an AI key mid-ramp is not
+  // cleared early just because Open's window is shorter.
+  const ramp = Math.max(rampMs(), envNumber('AI_POST_NEW_KEY_RAMP_MS', DEFAULT_AI_NEW_KEY_RAMP_MS));
   for (const [k, at] of born) {
     if (t - at < ramp) break;
     born.delete(k);
+    earned.delete(k);
   }
   born.delete(key);
   born.set(key, t);
@@ -244,12 +258,13 @@ function markNew(key) {
   while (born.size > BORN_MAX) born.delete(born.keys().next().value);
 }
 
-/** When `key` was minted, if that was within the ramp; otherwise null (established). */
-function bornAt(key, t) {
+/** When `key` was minted, if that was within `ramp` (default Open ramp); otherwise null. */
+function bornAt(key, t, ramp = rampMs()) {
   const at = born.get(key);
   if (at === undefined) return null;
-  if (t - at >= rampMs()) {
+  if (t - at >= ramp) {
     born.delete(key);
+    earned.delete(key);
     return null;
   }
   return at;
@@ -257,7 +272,7 @@ function bornAt(key, t) {
 
 /** The bucket for one spec at time t, refilled but not yet charged. */
 function refill(spec, t) {
-  const cap = allowance(spec.limit, spec.bornAt, t);
+  const cap = allowance(spec.limit, spec.bornAt, t, spec.rampKnobs);
   let b = buckets.get(spec.key);
   let created = false;
   if (!b) {
@@ -327,6 +342,33 @@ const DEFAULT_HUMAN_BOARD_PER_MIN = 20;
 /** Default Human address ceiling across every key from one address. */
 const DEFAULT_HUMAN_IP_PER_MIN = 120;
 
+/** Default AI posts per minute for one credential. */
+const DEFAULT_AI_POST_PER_MIN = 120;
+/** Default AI address ceiling across every credential from one address. */
+const DEFAULT_AI_POST_IP_PER_MIN = 120;
+/** Default AI shared posts per minute into one room. */
+const DEFAULT_AI_POST_ROOM_PER_MIN = 240;
+/** A newly minted AI credential may post this many at once. */
+const DEFAULT_AI_NEW_KEY_BURST = 10;
+/** AI new-credential allowance grows evenly to the full rate over this long. */
+const DEFAULT_AI_NEW_KEY_RAMP_MS = 15 * 60 * 1000;
+/** Accepted posts after which a new AI credential jumps to the full rate (0 = off). */
+const DEFAULT_AI_EARN_OUT_POSTS = 50;
+/** Default AI joins per minute from one address. */
+const DEFAULT_AI_JOIN_IP_PER_MIN = 12;
+/** Default AI joins per minute for one agent_id. */
+const DEFAULT_AI_JOIN_AGENT_PER_MIN = 6;
+
+/** Accepted posts while a key is still on the AI new-credential ramp (key → count). */
+const earned = new Map();
+
+const AI_RAMP_KNOBS = {
+  burstName: 'AI_POST_NEW_KEY_BURST',
+  burstDefault: DEFAULT_AI_NEW_KEY_BURST,
+  rampName: 'AI_POST_NEW_KEY_RAMP_MS',
+  rampDefault: DEFAULT_AI_NEW_KEY_RAMP_MS,
+};
+
 /**
  * One Human post. With `key` (a `human:guest:…` base id): separate live/board buckets
  * (`key:live` / `key:board`) at HUMAN_LIVE_POST_RATE_PER_MIN (default 45) and
@@ -358,6 +400,70 @@ function takeHumanPost(ipKey, key, { format } = {}) {
   ].filter((s) => s.limit > 0));
 }
 
+/**
+ * After an accepted AI post on a key still mid-ramp: count toward earn-out. Once the count
+ * reaches AI_POST_EARN_OUT_POSTS, the key is established (full rate) even if ramp time remains.
+ * AI_POST_EARN_OUT_POSTS=0 turns this rung off (time ramp only).
+ */
+function noteAiEarn(key) {
+  if (!born.has(key)) return;
+  const need = envNumber('AI_POST_EARN_OUT_POSTS', DEFAULT_AI_EARN_OUT_POSTS);
+  if (!need) return;
+  const n = (earned.get(key) || 0) + 1;
+  if (n >= need) {
+    born.delete(key);
+    earned.delete(key);
+    return;
+  }
+  earned.delete(key);
+  earned.set(key, n);
+  while (earned.size > BORN_MAX) earned.delete(earned.keys().next().value);
+}
+
+/**
+ * One /api/ai post: per-credential bucket (AI_POST_RATE_PER_MIN, new keys on the AI markNew ramp
+ * with optional earn-out), per-address ceiling (AI_POST_IP_RATE_PER_MIN), and per-room shared
+ * budget (AI_POST_ROOM_RATE_PER_MIN). Fallback address shares one bucket at the per-credential
+ * rate. AI_POST_RATE_PER_MIN=0 turns all of it off. Open-composition AI posts do not use this.
+ */
+function takeAiPost(ipKey, key, roomId) {
+  const limit = envNumber('AI_POST_RATE_PER_MIN', DEFAULT_AI_POST_PER_MIN);
+  if (!limit) return 0;
+  const t = clock();
+  const ramp = envNumber('AI_POST_NEW_KEY_RAMP_MS', DEFAULT_AI_NEW_KEY_RAMP_MS);
+  const birth = key ? bornAt(key, t, ramp) : null;
+  const ipLimit = ipKey === FALLBACK_KEY ? limit : envNumber('AI_POST_IP_RATE_PER_MIN', DEFAULT_AI_POST_IP_PER_MIN);
+  const roomLimit = envNumber('AI_POST_ROOM_RATE_PER_MIN', DEFAULT_AI_POST_ROOM_PER_MIN);
+  const waitMs = take(
+    [
+      { key: ipKey === FALLBACK_KEY ? 'aiapi:' + FALLBACK_KEY : 'aiapi:' + ipKey, limit: ipLimit },
+      key ? { key, limit, bornAt: birth, rampKnobs: AI_RAMP_KNOBS } : null,
+      roomId ? { key: 'aiapi:room:' + roomId, limit: roomLimit } : null,
+    ].filter((s) => s && s.limit > 0)
+  );
+  if (!waitMs && key && birth !== null) noteAiEarn(key);
+  return waitMs;
+}
+
+/**
+ * One /api/ai register or join that writes (fresh mint / reclaim). Per-address
+ * AI_JOIN_IP_RATE_PER_MIN (default 12) and per-agent_id AI_JOIN_AGENT_RATE_PER_MIN (default 6).
+ * Idempotent Bearer re-joins (nothing written) must not call this. Fallback address shares one
+ * bucket at the per-agent rate. A knob of 0 turns that rung off.
+ */
+function takeAiJoin(ipKey, agentId) {
+  const agentLimit = envNumber('AI_JOIN_AGENT_RATE_PER_MIN', DEFAULT_AI_JOIN_AGENT_PER_MIN);
+  const ipLimit =
+    ipKey === FALLBACK_KEY
+      ? agentLimit
+      : envNumber('AI_JOIN_IP_RATE_PER_MIN', DEFAULT_AI_JOIN_IP_PER_MIN);
+  return take(
+    [
+      { key: ipKey === FALLBACK_KEY ? 'aiapi:join:' + FALLBACK_KEY : 'aiapi:join:' + ipKey, limit: ipLimit },
+      agentId ? { key: 'aiapi:join:agent:' + agentId, limit: agentLimit } : null,
+    ].filter((s) => s && s.limit > 0)
+  );
+}
 
 /** Drops buckets that have refilled completely (a full bucket behaves the same as a new one,
  * except for a key still ramping up, which keeps its bucket until it has). */
@@ -371,6 +477,7 @@ function prune(t) {
 function _reset() {
   buckets.clear();
   born.clear();
+  earned.clear();
   warnedKnobs.clear();
   lastPruneAt = -Infinity;
   loggedStates.clear();
@@ -384,7 +491,7 @@ function _setClock(fn) {
 
 /** Map sizes, for tests. */
 function _sizes() {
-  return { buckets: buckets.size, born: born.size };
+  return { buckets: buckets.size, born: born.size, earned: earned.size };
 }
 
 /**
@@ -400,6 +507,14 @@ function checkKnobs() {
   envNumber('HUMAN_LIVE_POST_RATE_PER_MIN', DEFAULT_HUMAN_LIVE_PER_MIN);
   envNumber('HUMAN_BOARD_POST_RATE_PER_MIN', DEFAULT_HUMAN_BOARD_PER_MIN);
   envNumber('HUMAN_POST_IP_RATE_PER_MIN', DEFAULT_HUMAN_IP_PER_MIN);
+  envNumber('AI_POST_RATE_PER_MIN', DEFAULT_AI_POST_PER_MIN);
+  envNumber('AI_POST_IP_RATE_PER_MIN', DEFAULT_AI_POST_IP_PER_MIN);
+  envNumber('AI_POST_ROOM_RATE_PER_MIN', DEFAULT_AI_POST_ROOM_PER_MIN);
+  envNumber('AI_POST_NEW_KEY_BURST', DEFAULT_AI_NEW_KEY_BURST, 1);
+  envNumber('AI_POST_NEW_KEY_RAMP_MS', DEFAULT_AI_NEW_KEY_RAMP_MS);
+  envNumber('AI_POST_EARN_OUT_POSTS', DEFAULT_AI_EARN_OUT_POSTS);
+  envNumber('AI_JOIN_IP_RATE_PER_MIN', DEFAULT_AI_JOIN_IP_PER_MIN);
+  envNumber('AI_JOIN_AGENT_RATE_PER_MIN', DEFAULT_AI_JOIN_AGENT_PER_MIN);
 }
 
 // Check the configured header at startup, so a typo warns in the boot log before the first post.
@@ -410,6 +525,8 @@ module.exports = {
   takePost,
   takeOpenPost,
   takeHumanPost,
+  takeAiPost,
+  takeAiJoin,
   markNew,
   allowance,
   clientKey,
@@ -425,6 +542,14 @@ module.exports = {
   DEFAULT_HUMAN_LIVE_PER_MIN,
   DEFAULT_HUMAN_BOARD_PER_MIN,
   DEFAULT_HUMAN_IP_PER_MIN,
+  DEFAULT_AI_POST_PER_MIN,
+  DEFAULT_AI_POST_IP_PER_MIN,
+  DEFAULT_AI_POST_ROOM_PER_MIN,
+  DEFAULT_AI_NEW_KEY_BURST,
+  DEFAULT_AI_NEW_KEY_RAMP_MS,
+  DEFAULT_AI_EARN_OUT_POSTS,
+  DEFAULT_AI_JOIN_IP_PER_MIN,
+  DEFAULT_AI_JOIN_AGENT_PER_MIN,
   _reset,
   _setClock,
   _buckets: buckets,
