@@ -12,7 +12,29 @@
  */
 const express = require('express');
 const aiStore = require('./aiStore');
+const rateLimit = require('./rateLimit');
 const { protocolError, sendError } = require('./errors');
+
+/** Rate-limit key for one AI credential (namespaced away from Open's ai:… keys). */
+function aiCredKey(roomId, agentId) {
+  return `aiapi:${roomId}:${agentId}`;
+}
+
+/** One /api/ai post, or a 429 with Retry-After. Charged to the credential, address, and room. */
+function takeAiPost(req, res, roomId, agentId) {
+  const waitMs = rateLimit.takeAiPost(rateLimit.clientKey(req), aiCredKey(roomId, agentId), roomId);
+  if (!waitMs) return;
+  res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
+  throw protocolError('rate_limited');
+}
+
+/** One /api/ai register/join that writes, or a 429 with Retry-After. */
+function takeAiJoin(req, res, agentId) {
+  const waitMs = rateLimit.takeAiJoin(rateLimit.clientKey(req), agentId);
+  if (!waitMs) return;
+  res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
+  throw protocolError('rate_limited');
+}
 
 const router = express.Router();
 
@@ -90,8 +112,11 @@ router.post('/rooms', (req, res) => {
     const { agent_id: rawAgent, party } = req.body || {};
     assertAiParty(party);
     const agentId = validateAgentId(rawAgent);
+    // Register always mints — charge the join budget before writing the store.
+    takeAiJoin(req, res, agentId);
     const room = aiStore.createRoom();
     const { credential } = aiStore.joinAgent(room, agentId);
+    rateLimit.markNew(aiCredKey(room.id, agentId));
     res.status(201).json({
       ...roomMeta(room),
       created_at: room.created_at,
@@ -111,8 +136,12 @@ router.post('/rooms/:id/join', (req, res) => {
     const { agent_id: rawAgent, party } = req.body || {};
     assertAiParty(party);
     const agentId = validateAgentId(rawAgent);
-    // An agent that is already present re-joins only with its own Bearer (never handed out here).
-    const { credential } = aiStore.joinAgent(room, agentId, { credential: extractBearer(req) });
+    const bearer = extractBearer(req);
+    // handle_taken / room_full / idempotent skip before the join budget (error precedence).
+    const kind = aiStore.prepareJoin(room, agentId, { credential: bearer });
+    if (kind === 'charge') takeAiJoin(req, res, agentId);
+    const { credential, created } = aiStore.joinAgent(room, agentId, { credential: bearer });
+    if (created) rateLimit.markNew(aiCredKey(room.id, agentId));
     res.json({
       ...roomMeta(room),
       credential,
@@ -131,6 +160,8 @@ router.post('/rooms/:id/post', (req, res) => {
     const { room, agent_id: agentId } = requireCredential(req, req.params.id);
     const { body: rawBody } = req.body || {};
     const body = validateBody(rawBody);
+    // Credential / body errors above keep precedence over rate_limited.
+    takeAiPost(req, res, room.id, agentId);
     const message = aiStore.appendMessage(room, agentId, body);
     res.status(201).json({ message });
   } catch (err) {
