@@ -3,7 +3,9 @@
  * Guest identity (same model as Open, see /guests): the first join gives this browser a guest
  * key. It is kept in localStorage with the name and room you are seated in, sent as
  * X-Lyceum-Guest on every call, and never shown on the page. A reload re-seats you under the
- * same name instead of leaving a ghost on the roster; Leave clears the seat.
+ * same name with that key. Idle seats expire on the server (presence TTL); this page does not
+ * leave on tab close. Leave clears the stored seat. If a poll or post gets not_joined (seat
+ * expired, or another tab left), we rejoin once with the stored key and retry once.
  */
 (function () {
   const WELCOME = 'welcome';
@@ -166,6 +168,49 @@
     return data;
   }
 
+  /** Seat-gone responses: rejoin once with the stored key, then retry the action once. */
+  function seatGone(err) {
+    return Boolean(err && (err.code === 'not_joined' || err.code === 'guest_key_required'));
+  }
+
+  /**
+   * Rejoin the stored room with the stored key. Does not clear the seat on failure.
+   * Returns true when the join succeeded.
+   */
+  async function silentRejoin() {
+    const seat = loadSeat();
+    if (!seat || !seat.handle || !seat.roomId) return false;
+    if (!guestKey()) return false;
+    try {
+      await api(`/rooms/${encodeURIComponent(seat.roomId)}/join`, {
+        method: 'POST',
+        body: JSON.stringify({ handle: seat.handle, party: 'human' }),
+      });
+      state.roomId = seat.roomId;
+      state.handle = seat.handle;
+      saveSeat(seat.handle, seat.roomId);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  /** Run `action`; on seat-gone, rejoin once and retry once. Never loops. */
+  async function withSeat(action) {
+    try {
+      return await action();
+    } catch (e) {
+      if (!seatGone(e)) throw e;
+      if (!(await silentRejoin())) {
+        const seat = loadSeat();
+        if (seat && seat.handle) handleInput.value = seat.handle;
+        resetRoom();
+        throw e;
+      }
+      return await action();
+    }
+  }
+
   /* ---------- Rendering ---------- */
 
   function refreshFace() {
@@ -265,21 +310,23 @@
   async function refresh() {
     if (!state.roomId) return;
     try {
-      const data = await api(
-        `/rooms/${encodeURIComponent(state.roomId)}/messages?handle=${encodeURIComponent(state.handle)}`
-      );
-      clearError();
-      state.title = data.title || state.title;
-      state.parentId = data.parent_id || null;
-      state.mergedInto = data.merged_into || null;
-      if (data.format) setFormat(data.format);
-      renderLineage();
-      Format.renderMessages(state, threadEl, data.messages, esc);
-      const roster = data.roster;
-      rosterEl.innerHTML =
-        roster && roster.length
-          ? roster.map((p) => `<li>${esc(p.handle)}<span class="party-tag">${esc(p.party || 'human')}</span></li>`).join('')
-          : '<li><em>Empty</em></li>';
+      await withSeat(async () => {
+        const data = await api(
+          `/rooms/${encodeURIComponent(state.roomId)}/messages?handle=${encodeURIComponent(state.handle)}`
+        );
+        clearError();
+        state.title = data.title || state.title;
+        state.parentId = data.parent_id || null;
+        state.mergedInto = data.merged_into || null;
+        if (data.format) setFormat(data.format);
+        renderLineage();
+        Format.renderMessages(state, threadEl, data.messages, esc);
+        const roster = data.roster;
+        rosterEl.innerHTML =
+          roster && roster.length
+            ? roster.map((p) => `<li>${esc(p.handle)}<span class="party-tag">${esc(p.party || 'human')}</span></li>`).join('')
+            : '<li><em>Empty</em></li>';
+      });
     } catch (e) {
       showError(e.code, e.message);
     }
@@ -392,9 +439,12 @@
     'submit',
     onAction(async (ev) => {
       ev.preventDefault();
-      await api(`/rooms/${encodeURIComponent(state.roomId)}/post`, {
-        method: 'POST',
-        body: JSON.stringify({ handle: state.handle, body: bodyInput.value, party: 'human' }),
+      const body = bodyInput.value;
+      await withSeat(async () => {
+        await api(`/rooms/${encodeURIComponent(state.roomId)}/post`, {
+          method: 'POST',
+          body: JSON.stringify({ handle: state.handle, body, party: 'human' }),
+        });
       });
       bodyInput.value = '';
       refreshFace();
@@ -413,10 +463,12 @@
       'click',
       onAction(async () => {
         if (!state.roomId || !state.handle) return;
-        const branch = await api(`/rooms/${encodeURIComponent(state.roomId)}/branch`, {
-          method: 'POST',
-          body: JSON.stringify({ handle: state.handle, party: 'human' }),
-        });
+        const branch = await withSeat(() =>
+          api(`/rooms/${encodeURIComponent(state.roomId)}/branch`, {
+            method: 'POST',
+            body: JSON.stringify({ handle: state.handle, party: 'human' }),
+          })
+        );
         enterRoom(branch.room_id, state.handle, branch);
       })
     );
@@ -430,10 +482,12 @@
         if (!state.roomId || !state.handle) return;
         const target = mergeTargetInput ? mergeTargetInput.value.trim() : '';
         if (!target) return showError('invalid_request', 'Enter a target room id to merge into.');
-        const result = await api(`/rooms/${encodeURIComponent(state.roomId)}/merge`, {
-          method: 'POST',
-          body: JSON.stringify({ handle: state.handle, party: 'human', target_id: target }),
-        });
+        const result = await withSeat(() =>
+          api(`/rooms/${encodeURIComponent(state.roomId)}/merge`, {
+            method: 'POST',
+            body: JSON.stringify({ handle: state.handle, party: 'human', target_id: target }),
+          })
+        );
         await join(result.target.room_id, state.handle);
       })
     );
@@ -455,29 +509,6 @@
     resetRoom();
   });
 
-  // Tab close / navigate away: leave so the seat frees capacity (S-1). sendBeacon cannot set
-  // X-Lyceum-Guest, so use fetch with keepalive. The key stays in localStorage for a later rejoin.
-  window.addEventListener('pagehide', () => {
-    if (!state.roomId || !state.handle) return;
-    const key = guestKey();
-    const body = JSON.stringify({ handle: state.handle, party: 'human' });
-    try {
-      fetch(`/api/human/rooms/${encodeURIComponent(state.roomId)}/leave`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          Accept: 'application/json',
-          ...(key ? { 'X-Lyceum-Guest': key } : {}),
-        },
-        body,
-        keepalive: true,
-      });
-    } catch (_) {
-      /* unload: best effort */
-    }
-    saveSeat(state.handle, '');
-  });
-
   /* ---------- Start: deep link, remembered name, re-seat after reload ---------- */
 
   let linkedRoom = '';
@@ -495,9 +526,9 @@
   const seat = loadSeat();
   if (seat && seat.handle) handleInput.value = seat.handle;
   if (seat && seat.handle && seat.roomId && (!linkedRoom || linkedRoom === seat.roomId)) {
-    // Re-join with this browser's key: the server keeps the same seat, so no ghost is left behind.
+    // Re-join with this browser's key. Seat storage is only cleared by Leave, so a failed
+    // rejoin still leaves the name/room remembered for the next try.
     join(seat.roomId, seat.handle).catch((e) => {
-      saveSeat(seat.handle, '');
       showError(e.code, e.message);
     });
   } else if (linkedRoom) {
