@@ -94,13 +94,41 @@ function sendJoinError(res, err) {
 }
 
 
-/** One Human post, or a 429 with Retry-After. Charged to the guest key (live/board rate) and to
- * the address ceiling once a key exists; keyless calls stay on the address-only bucket (#46). */
-function takeHumanPost(req, res, { guestId, format } = {}) {
+/** One Human post, or a 429 with Retry-After. Charged to the guest key (live/board rate),
+ * address ceiling, and room budget once a key exists; keyless calls stay address-only (#46). */
+function takeHumanPost(req, res, { guestId, format, roomId } = {}) {
   const key = guestId ? `human:guest:${guestId}` : null;
-  const waitMs = rateLimit.takeHumanPost(rateLimit.clientKey(req), key, { format });
+  const waitMs = rateLimit.takeHumanPost(rateLimit.clientKey(req), key, { format, roomId });
   if (!waitMs) return;
-  res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
+  const secs = Math.ceil(waitMs / 1000);
+  res.set('Retry-After', String(secs));
+  throw protocolError('rate_limited');
+}
+
+function joinRateLimited(res, waitMs) {
+  const secs = Math.ceil(waitMs / 1000);
+  res.set('Retry-After', String(secs));
+  // Lead only; /human (#48 countdown) appends "Try again in N seconds." from Retry-After.
+  throw protocolError('rate_limited', "You're joining quickly.");
+}
+
+/**
+ * One Human join that writes (mint / claim / new seat): address HUMAN_JOIN_RATE_PER_MIN +
+ * join:site in one take(). With an existing key, also HUMAN_REJOIN_RATE_PER_MIN on that key.
+ * Owned reseats (prepareJoin 'skip') must not call this.
+ */
+function takeHumanJoin(req, res, { guestId } = {}) {
+  const waitMs = rateLimit.takeHumanJoin(rateLimit.clientKey(req), guestId || null);
+  if (!waitMs) return;
+  joinRateLimited(res, waitMs);
+}
+
+/** Branch/merge budget, or a 429 with the post-style message (sheet). */
+function takeHumanStruct(req, res, guestId) {
+  const waitMs = rateLimit.takeHumanStruct(rateLimit.clientKey(req), guestId || null);
+  if (!waitMs) return;
+  const secs = Math.ceil(waitMs / 1000);
+  res.set('Retry-After', String(secs));
   throw protocolError('rate_limited');
 }
 
@@ -169,6 +197,7 @@ router.post('/rooms/:id/branch', (req, res) => {
     assertHumanParty(party);
     const handle = validateHandle(rawHandle);
     const gid = requireOwnHandle(req, parent, handle);
+    takeHumanStruct(req, res, gid);
     const room = store.branchRoom(parent, { title });
     store.seatInBranch(room, handle, gid);
     res.status(201).json({
@@ -193,8 +222,9 @@ router.post('/rooms/:id/merge', (req, res) => {
     const target = requireRoom(targetId.trim());
     assertNotMerged(source);
     store.assertMergeAllowed(source, target);
-    requireOwnHandle(req, source, handle);
+    const gid = requireOwnHandle(req, source, handle);
     requireOwnHandle(req, target, handle);
+    takeHumanStruct(req, res, gid);
     const result = store.mergeRooms(source, target);
     res.json({
       ok: true,
@@ -218,7 +248,11 @@ router.post('/rooms/:id/join', (req, res) => {
     const { handle: rawHandle, party } = req.body || {};
     assertHumanParty(party);
     const handle = validateHandle(rawHandle);
-    const { guest_key: guestKey } = store.joinHuman(room, handle, guestOf(req));
+    const gid = guestOf(req);
+    // handle_taken / room_full / idempotent skip before the join budget (error precedence).
+    const kind = store.prepareJoin(room, handle, gid);
+    if (kind === 'charge') takeHumanJoin(req, res, { guestId: gid });
+    const { guest_key: guestKey } = store.joinHuman(room, handle, gid);
     // A key minted here starts on the new-key ramp (#46 ladder, same as Open).
     if (guestKey) rateLimit.markNew(`human:guest:${store.resolveGuest(guestKey)}`);
     res.json({
@@ -243,7 +277,7 @@ router.post('/rooms/:id/post', (req, res) => {
     const handle = validateHandle(rawHandle);
     const gid = requireOwnHandle(req, room, handle);
     const body = validateBody(rawBody, { format: room.format });
-    takeHumanPost(req, res, { guestId: gid, format: room.format });
+    takeHumanPost(req, res, { guestId: gid, format: room.format, roomId: room.id });
     const crypto = require('crypto');
     const message = {
       id: `msg_${crypto.randomBytes(6).toString('hex')}`,
