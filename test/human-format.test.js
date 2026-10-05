@@ -200,4 +200,16 @@ describe('Room format live|board', () => {
     assert.match(js, /btn-leave[\s\S]*saveSeat\(state\.handle, ''\)/);
     assert.equal(/join\(seat\.roomId[\s\S]*saveSeat\(seat\.handle, ''\)/.test(js), false);
   });
+
+  it('/human client W-4: silentRejoin prefers this tab state.roomId/handle over shared seat LS', async () => {
+    const js = await (await fetch(`${base}/js/human.js`)).text();
+    // Must prefer in-memory state so another tab's stored seat cannot switch room/name.
+    assert.match(js, /state\.roomId\s*\|\|\s*\(seat\s*&&\s*seat\.roomId\)/);
+    assert.match(js, /state\.handle\s*\|\|\s*\(seat\s*&&\s*seat\.handle\)/);
+    // Leave cleared shared roomId → refuse rejoin (other tabs drop to the form).
+    assert.match(js, /seat\.roomId\s*===\s*['"]{2}/);
+    // Must not assign state from loadSeat alone (the W-4 bug).
+    assert.equal(/state\.roomId\s*=\s*seat\.roomId/.test(js), false);
+    assert.equal(/state\.handle\s*=\s*seat\.handle/.test(js), false);
+  });
 });
