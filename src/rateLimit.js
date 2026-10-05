@@ -17,8 +17,11 @@
  *    AI_POST_IP_RATE_PER_MIN (120), per room AI_POST_ROOM_RATE_PER_MIN (240); new credentials start
  *    at AI_POST_NEW_KEY_BURST (10) and ramp over AI_POST_NEW_KEY_RAMP_MS (15 min), or earn full rate
  *    after AI_POST_EARN_OUT_POSTS (50) accepted posts; joins at AI_JOIN_IP_RATE_PER_MIN (12) per
- *    address and AI_JOIN_AGENT_RATE_PER_MIN (6) per agent_id from one address. Open-composition AI stays on Open's
- *    30/min bucket.
+ *    address and AI_JOIN_AGENT_RATE_PER_MIN (6) per agent_id from one address. Open joins (human and
+ *    Open-composition AI) at OPEN_JOIN_IP_RATE_PER_MIN (12) per address; every writing join across
+ *    Open and /api/ai also shares JOIN_SITE_RATE_PER_MIN (300). Human joins are not charged yet —
+ *    they join the site backstop together with a Human per-address join limit (without one, a single
+ *    address could burn the site budget). Open-composition AI posts stay on Open's 30/min bucket.
  * A refusal is a 429 with Retry-After and a plain message; nothing is delayed or dropped silently.
  * OPEN_POST_RATE_PER_MIN=0 turns the Open and MCP limits off. AI_POST_RATE_PER_MIN=0 turns the AI
  * post limits off.
@@ -363,6 +366,10 @@ const DEFAULT_AI_EARN_OUT_POSTS = 50;
 const DEFAULT_AI_JOIN_IP_PER_MIN = 12;
 /** Default AI joins per minute for one agent_id. */
 const DEFAULT_AI_JOIN_AGENT_PER_MIN = 6;
+/** Default Open joins per minute from one address (human and Open-composition AI). */
+const DEFAULT_OPEN_JOIN_IP_PER_MIN = 12;
+/** Default site-wide writing-join backstop shared by Open and /api/ai (Human joins later). */
+const DEFAULT_JOIN_SITE_PER_MIN = 300;
 
 /** Accepted posts while a key is still on the AI new-credential ramp (key → count). */
 const earned = new Map();
@@ -450,12 +457,18 @@ function takeAiPost(ipKey, key, roomId) {
   return waitMs;
 }
 
+/** Shared site-wide writing-join backstop (Open + /api/ai; Human joins later with its per-IP rung). */
+function siteJoinSpec() {
+  return { key: 'join:site', limit: envNumber('JOIN_SITE_RATE_PER_MIN', DEFAULT_JOIN_SITE_PER_MIN) };
+}
+
 /**
  * One /api/ai register or join that writes (fresh mint / reclaim). Per-address
  * AI_JOIN_IP_RATE_PER_MIN (default 12) and AI_JOIN_AGENT_RATE_PER_MIN (default 6) per agent_id
- * from one address, so joins from other addresses can't use up a named agent's budget (QC A2).
- * Idempotent Bearer re-joins (nothing written) must not call this. Fallback address shares one
- * bucket at the per-agent rate. A knob of 0 turns that rung off.
+ * from one address, so joins from other addresses can't use up a named agent's budget (QC A2),
+ * plus the site-wide JOIN_SITE_RATE_PER_MIN backstop in the same take() so a refusal burns no
+ * other bucket. Idempotent Bearer re-joins (nothing written) must not call this. Fallback
+ * address shares one bucket at the per-agent rate. A knob of 0 turns that rung off.
  */
 function takeAiJoin(ipKey, agentId) {
   const agentLimit = envNumber('AI_JOIN_AGENT_RATE_PER_MIN', DEFAULT_AI_JOIN_AGENT_PER_MIN);
@@ -467,6 +480,27 @@ function takeAiJoin(ipKey, agentId) {
     [
       { key: ipKey === FALLBACK_KEY ? 'aiapi:join:' + FALLBACK_KEY : 'aiapi:join:' + ipKey, limit: ipLimit },
       agentId ? { key: 'aiapi:join:agent:' + ipKey + ':' + agentId, limit: agentLimit } : null,
+      siteJoinSpec(),
+    ].filter((s) => s && s.limit > 0)
+  );
+}
+
+/**
+ * One Open join that writes (fresh mint / reclaim for human or Open-composition AI).
+ * Per-address OPEN_JOIN_IP_RATE_PER_MIN (default 12) plus the site-wide JOIN_SITE_RATE_PER_MIN
+ * backstop in the same take(). Open has no per-agent join knob: the fallback address is held
+ * to AI_JOIN_AGENT_RATE_PER_MIN's default (6), and OPEN_JOIN_IP_RATE_PER_MIN=0 turns the
+ * per-address rung off for known and fallback addresses alike. Idempotent rejoins must not
+ * call this. A knob of 0 turns that rung off.
+ */
+function takeOpenJoin(ipKey) {
+  const openIp = envNumber('OPEN_JOIN_IP_RATE_PER_MIN', DEFAULT_OPEN_JOIN_IP_PER_MIN);
+  // Fallback: no per-agent Open knob — hold to AI agent default (6). Knob 0 turns this rung off.
+  const ipLimit = ipKey === FALLBACK_KEY ? (openIp > 0 ? DEFAULT_AI_JOIN_AGENT_PER_MIN : 0) : openIp;
+  return take(
+    [
+      { key: ipKey === FALLBACK_KEY ? 'open:join:' + FALLBACK_KEY : 'open:join:' + ipKey, limit: ipLimit },
+      siteJoinSpec(),
     ].filter((s) => s && s.limit > 0)
   );
 }
@@ -521,6 +555,8 @@ function checkKnobs() {
   envNumber('AI_POST_EARN_OUT_POSTS', DEFAULT_AI_EARN_OUT_POSTS);
   envNumber('AI_JOIN_IP_RATE_PER_MIN', DEFAULT_AI_JOIN_IP_PER_MIN);
   envNumber('AI_JOIN_AGENT_RATE_PER_MIN', DEFAULT_AI_JOIN_AGENT_PER_MIN);
+  envNumber('OPEN_JOIN_IP_RATE_PER_MIN', DEFAULT_OPEN_JOIN_IP_PER_MIN);
+  envNumber('JOIN_SITE_RATE_PER_MIN', DEFAULT_JOIN_SITE_PER_MIN);
 }
 
 // Check the configured header at startup, so a typo warns in the boot log before the first post.
@@ -533,6 +569,8 @@ module.exports = {
   takeHumanPost,
   takeAiPost,
   takeAiJoin,
+  takeOpenJoin,
+  siteJoinSpec,
   markNew,
   allowance,
   clientKey,
@@ -556,6 +594,8 @@ module.exports = {
   DEFAULT_AI_EARN_OUT_POSTS,
   DEFAULT_AI_JOIN_IP_PER_MIN,
   DEFAULT_AI_JOIN_AGENT_PER_MIN,
+  DEFAULT_OPEN_JOIN_IP_PER_MIN,
+  DEFAULT_JOIN_SITE_PER_MIN,
   _reset,
   _setClock,
   _buckets: buckets,

@@ -981,6 +981,60 @@ function assertCapacity(room) {
   }
 }
 
+
+/**
+ * Whether an Open human join would write. Returns 'skip' when this guest already owns the
+ * name (present or away — an owner reseating its held name mints nothing). Returns 'charge'
+ * for a fresh mint, claim, or brand-new seat. Throws handle_taken / room_full / invalid_handle /
+ * guest_name_limit the same way joinHuman would, so those codes keep precedence over
+ * rate_limited.
+ */
+function prepareHumanJoin(room, handle, gid = null) {
+  const key = rosterKey('human', handle);
+  if (!isMember(room, 'human', handle) && !nameAllowed(handle)) {
+    throw protocolError('invalid_handle');
+  }
+  const members = membersOf(room);
+  const rec = members[key] && typeof members[key] === 'object' ? members[key] : null;
+  assertNotHeldByOther(rec, gid);
+  assertIdFree(room, 'human', handle);
+  const present = room.roster.has(key);
+  assertClaimable(rec, present);
+  if (!present) assertCapacity(room);
+  assertUnderNameCap(gid, rec, {
+    holdsName: () => guestHolds(gid, handle),
+    heldCount: () => namesHeldBy(gid).size,
+  });
+  // Owner reseat (present or away) is free — same idea as Human/AI idempotent rejoins.
+  if (gid && ownsHuman(room, handle, gid)) return 'skip';
+  return 'charge';
+}
+
+/**
+ * Whether an Open AI join would write. Returns 'skip' for an idempotent Bearer (or trusted)
+ * re-join — do not charge. Returns 'charge' for a fresh mint or reclaim. Throws handle_taken /
+ * room_full the same way joinAi would.
+ */
+function prepareAiJoin(room, agentId, auth = {}) {
+  const key = rosterKey('ai', agentId);
+  assertIdFree(room, 'ai', agentId);
+  if (room.roster.has(key)) {
+    const existing = room.roster.get(key);
+    const live = Boolean(existing.credential) && credentials.has(existing.credential);
+    const proven = live && sameSecret(auth.credential, existing.credential);
+    if (!proven && !auth.trusted) {
+      throw identityError(
+        'handle_taken',
+        `${agentId} is already present in this room. Re-join with its Bearer credential, or join after it leaves or times out.`
+      );
+    }
+    if (!live) return 'charge';
+    return 'skip';
+  }
+  assertCapacity(room);
+  return 'charge';
+}
+
 /**
  * Join (or re-join) a human as guest `gid` (null when the request had no valid guest key).
  * Returns { room, created, guest_key }; guest_key is set only when this join minted one.
@@ -1214,7 +1268,9 @@ module.exports = {
   getRoom,
   listRoster,
   joinHuman,
+  prepareHumanJoin,
   joinAi,
+  prepareAiJoin,
   resolveCredential,
   authenticate,
   touch,

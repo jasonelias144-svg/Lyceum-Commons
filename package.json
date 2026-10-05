@@ -6,7 +6,7 @@
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "node --test test/*.test.js"
+    "test": "OPEN_JOIN_IP_RATE_PER_MIN=0 JOIN_SITE_RATE_PER_MIN=0 node --test test/*.test.js"
   },
   "engines": {
     "node": ">=20"

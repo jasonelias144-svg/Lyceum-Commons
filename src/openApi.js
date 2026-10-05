@@ -45,6 +45,14 @@ function takePost(req, res, key) {
   throw protocolError('rate_limited');
 }
 
+/** One Open join that writes, or a 429 with Retry-After. */
+function takeOpenJoin(req, res) {
+  const waitMs = rateLimit.takeOpenJoin(rateLimit.clientKey(req));
+  if (!waitMs) return;
+  res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
+  throw protocolError('rate_limited');
+}
+
 /** How long an inbox may wait for boot indexing before answering "try again shortly". */
 const INBOX_WAIT_MS = 10000;
 
@@ -247,6 +255,9 @@ router.post('/rooms/:id/join', (req, res) => {
     const identity = parseJoinIdentity(req);
 
     if (identity.kind === 'human') {
+      // handle_taken / room_full / idempotent skip before the join budget (error precedence).
+      const kind = openStore.prepareHumanJoin(room, identity.handle, guestOf(req));
+      if (kind === 'charge') takeOpenJoin(req, res);
       const { guest_key: guestKey } = openStore.joinHuman(room, identity.handle, guestOf(req));
       // A key minted here starts on the new-key ramp (R12-1b ladder).
       if (guestKey) rateLimit.markNew(`guest:${openStore.resolveGuest(guestKey)}`);
@@ -259,7 +270,11 @@ router.post('/rooms/:id/join', (req, res) => {
     }
 
     // An AI that is already present re-joins only with its own Bearer (never handed out here).
-    const { credential, created } = openStore.joinAi(room, identity.agent_id, { credential: extractBearer(req) });
+    const bearer = extractBearer(req);
+    // handle_taken / room_full / idempotent skip before the join budget (error precedence).
+    const kind = openStore.prepareAiJoin(room, identity.agent_id, { credential: bearer });
+    if (kind === 'charge') takeOpenJoin(req, res);
+    const { credential, created } = openStore.joinAi(room, identity.agent_id, { credential: bearer });
     if (created) rateLimit.markNew(`ai:${room.id}:${identity.agent_id}`);
     res.json({
       ...roomMeta(room),
