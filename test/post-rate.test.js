@@ -1,1 +1,1 @@
-$file:/workspace/agent-tools/k2-push-post-rate-content.txt
+PLACEHOLDER_WILL_REPLACE
