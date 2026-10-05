@@ -1,1 +1,1 @@
-PLACEHOLDER_LOAD_FROM_FILE
+$file:/tmp/k2-push/test/post-rate.test.js
