@@ -30,14 +30,17 @@ router.use((req, res, next) => {
 });
 
 /**
- * One post from this client's address, or a 429 with Retry-After (R12-1b). Keyed by address
- * because names and credentials are free to mint. The address comes from rateLimit.clientKey:
- * Railway's X-Real-IP there, req.ip elsewhere.
+ * One post, or a 429 with Retry-After (R12-1b soft-first ladder, see rateLimit.js). Charged to the
+ * poster's own key (their guest, or their AI credential) and to their address's ceiling, so a
+ * freshly minted key neither escapes the address limit nor starts with the full allowance.
  */
-function takePost(req, res) {
-  const waitMs = rateLimit.takePost(rateLimit.clientKey(req));
+function takePost(req, res, key) {
+  const waitMs = rateLimit.takeOpenPost(rateLimit.clientKey(req), key);
   if (!waitMs) return;
-  res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
+  const seconds = Math.ceil(waitMs / 1000);
+  res.set('Retry-After', String(seconds));
+  // The wait is in Retry-After only; the message has no number, so it can't go stale while a
+  // client counts down.
   throw protocolError('rate_limited');
 }
 
@@ -244,6 +247,8 @@ router.post('/rooms/:id/join', (req, res) => {
 
     if (identity.kind === 'human') {
       const { guest_key: guestKey } = openStore.joinHuman(room, identity.handle, guestOf(req));
+      // A key minted here starts on the new-key ramp (R12-1b ladder).
+      if (guestKey) rateLimit.markNew(`guest:${openStore.resolveGuest(guestKey)}`);
       return res.json({
         ...roomMeta(room),
         // Only on the join that minted it; never again.
@@ -253,7 +258,8 @@ router.post('/rooms/:id/join', (req, res) => {
     }
 
     // An AI that is already present re-joins only with its own Bearer (never handed out here).
-    const { credential } = openStore.joinAi(room, identity.agent_id, { credential: extractBearer(req) });
+    const { credential, created } = openStore.joinAi(room, identity.agent_id, { credential: extractBearer(req) });
+    if (created) rateLimit.markNew(`ai:${room.id}:${identity.agent_id}`);
     res.json({
       ...roomMeta(room),
       credential,
@@ -291,13 +297,13 @@ router.post('/rooms/:id/post', (req, res) => {
       if (party !== undefined && party !== null && party !== 'ai') {
         throw protocolError('invalid_party');
       }
-      const { room, agent_id: agentId } = requireAiCredential(req, roomId);
+      const { room, agent_id: agentId, binding } = requireAiCredential(req, roomId);
       author = agentId;
       forcedParty = 'ai';
       const body = validateBody(rawBody);
       const turnFields = validateTurnFields(bodyIn, POST_STATES);
       const reply_to = validateReplyTo(bodyIn.reply_to);
-      takePost(req, res);
+      takePost(req, res, `ai:${binding.room_id}:${agentId}`);
       const message = openStore.addMessage(room, { author, party: forcedParty, body, reply_to, ...turnFields });
       return res.status(201).json({ message, turn: openStore.turnOf(room) });
     }
@@ -311,13 +317,13 @@ router.post('/rooms/:id/post', (req, res) => {
     }
     const room = requireRoom(roomId);
     const handle = validateHandle(rawHandle);
-    requireOwnHandle(req, room, handle);
+    const gid = requireOwnHandle(req, room, handle);
     author = handle;
     forcedParty = 'human';
     const body = validateBody(rawBody);
     const turnFields = validateTurnFields(bodyIn, POST_STATES);
     const reply_to = validateReplyTo(bodyIn.reply_to);
-    takePost(req, res);
+    takePost(req, res, `guest:${gid}`);
     const message = openStore.addMessage(room, { author, party: forcedParty, body, reply_to, ...turnFields });
     res.status(201).json({ message, turn: openStore.turnOf(room) });
   } catch (err) {

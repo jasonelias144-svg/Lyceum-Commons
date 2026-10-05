@@ -1,18 +1,24 @@
 /**
- * Post rate limit (R12-1b). Messages persist and every restart reads them all back, so one client
- * posting without pause makes every later boot slower. Each key (a client address for the REST API,
- * a connector for MCP) gets a bucket of OPEN_POST_RATE_PER_MIN posts (default 30) that refills
- * evenly over a minute. OPEN_POST_RATE_PER_MIN=0 turns the limit off.
+ * Post rate limit (R12-1b, soft-first ladder). Messages persist and every restart reads them all
+ * back, so one client posting without pause makes every later boot slower. Rungs, all tunable:
+ *  - per key: each guest (Open human) or AI credential gets OPEN_POST_RATE_PER_MIN posts (default 30)
+ *    in a bucket that refills evenly over a minute; MCP connectors get the same, keyed by connector;
+ *  - new keys earn it: a key minted moments ago (the join that mints it calls markNew) starts at
+ *    OPEN_POST_NEW_KEY_BURST (5) and its allowance grows evenly to the full rate over
+ *    OPEN_POST_NEW_KEY_RAMP_MS (10 minutes);
+ *  - per address: every key from one address shares OPEN_POST_IP_RATE_PER_MIN (120), so minting
+ *    keys doesn't help; requests with no trustworthy address share one fallback bucket at the
+ *    per-key rate;
+ *  - Human stream (/api/human, no guest keys yet): HUMAN_POST_RATE_PER_MIN (30) per address.
+ * A refusal is a 429 with Retry-After and a plain message; nothing is delayed or dropped silently.
+ * OPEN_POST_RATE_PER_MIN=0 turns the Open and MCP limits off.
  */
 const DEFAULT_PER_MIN = 30;
 /** Buckets that have refilled completely are dropped once there are this many keys. */
 const PRUNE_AT = 10000;
 
 function perMinute() {
-  const raw = process.env.OPEN_POST_RATE_PER_MIN;
-  if (raw === undefined || raw === '') return DEFAULT_PER_MIN;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_PER_MIN;
+  return envNumber('OPEN_POST_RATE_PER_MIN', DEFAULT_PER_MIN);
 }
 
 /**
@@ -150,41 +156,187 @@ function clientKey(req) {
 }
 
 const buckets = new Map();
+/** Sweep full buckets at most this often once the map is large. */
+const PRUNE_EVERY_MS = 10000;
+let lastPruneAt = -Infinity;
 let clock = () => Date.now();
 
+/** Knobs whose bad value has already been warned about (name -> raw value), so it logs once. */
+const warnedKnobs = new Map();
+
 /**
- * Take one post from `key`'s bucket. Returns 0 when the post may go ahead, otherwise how many
- * milliseconds until the next one is allowed.
+ * A whole-number knob from the environment, at least `min` (0 means that rung is off where the
+ * README says so). Anything else (a fraction, a negative, text, Infinity) falls back to the
+ * default with one WARNING, since a value below one post can never refill to a whole post.
  */
-function takePost(key) {
-  const limit = perMinute();
-  if (!limit) return 0;
-  const t = clock();
-  const msPerPost = 60000 / limit;
-  let b = buckets.get(key);
-  if (!b) {
-    if (buckets.size >= PRUNE_AT) prune(t, limit, msPerPost);
-    b = { tokens: limit, at: t };
-    buckets.set(key, b);
-  } else {
-    b.tokens = Math.min(limit, b.tokens + (t - b.at) / msPerPost);
-    b.at = t;
+function envNumber(name, fallback, min = 0) {
+  const raw = process.env[name];
+  if (raw === undefined || String(raw).trim() === '') return fallback;
+  const n = Number(raw);
+  if (Number.isSafeInteger(n) && n >= min) return n;
+  if (warnedKnobs.get(name) !== raw) {
+    warnedKnobs.set(name, raw);
+    console.warn(
+      `[rate-limit] WARNING: ${name}=${JSON.stringify(raw)} is not a whole number >= ${min}; using the default ${fallback}.`
+    );
   }
-  if (b.tokens >= 1) {
-    b.tokens -= 1;
-    return 0;
-  }
-  return Math.ceil((1 - b.tokens) * msPerPost);
+  return fallback;
 }
 
-function prune(t, limit, msPerPost) {
+/** Posts per minute one address may make across every key it holds (default 120, so people
+ * sharing a NAT aren't held to one person's allowance). OPEN_POST_IP_RATE_PER_MIN tunes it. */
+const DEFAULT_IP_PER_MIN = 120;
+/** A newly minted key may post this many at once (OPEN_POST_NEW_KEY_BURST)... */
+const DEFAULT_NEW_KEY_BURST = 5;
+/** ...and its allowance grows evenly to the full per-key rate over this long (OPEN_POST_NEW_KEY_RAMP_MS). */
+const DEFAULT_NEW_KEY_RAMP_MS = 10 * 60 * 1000;
+
+function ipPerMinute() {
+  return envNumber('OPEN_POST_IP_RATE_PER_MIN', DEFAULT_IP_PER_MIN);
+}
+
+/**
+ * A key's allowance per minute at time t. A key with a known birth time starts at the new-key
+ * burst and earns the full rate over the ramp, so minting keys buys little. bornAt null means an
+ * established key: full rate.
+ */
+function allowance(limit, bornAt, t) {
+  if (bornAt === null || bornAt === undefined || !Number.isFinite(bornAt)) return limit;
+  const burst = envNumber('OPEN_POST_NEW_KEY_BURST', DEFAULT_NEW_KEY_BURST, 1);
+  const ramp = rampMs();
+  if (burst >= limit || !ramp) return limit;
+  const age = Math.max(0, t - bornAt);
+  return Math.min(limit, burst + ((limit - burst) * age) / ramp);
+}
+
+/**
+ * Keys minted by this process within the last ramp (key → ms). The join that mints a guest key or
+ * an AI credential calls markNew; any key not here is established and gets the full rate, so a
+ * restart never puts existing guests back on the ramp (a key minted just before a restart skips
+ * the rest of its ramp, which is fine: the address ceiling still holds).
+ */
+const born = new Map();
+/** Most keys tracked on the ramp at once (a flood of free joins can't grow it past this). */
+const BORN_MAX = 50000;
+
+function rampMs() {
+  return envNumber('OPEN_POST_NEW_KEY_RAMP_MS', DEFAULT_NEW_KEY_RAMP_MS);
+}
+
+/** Record that `key` was minted just now, so its posts start on the new-key ramp. */
+function markNew(key) {
+  const t = clock();
+  // A Map iterates in insertion order and every entry is (re)inserted at its birth, so the oldest
+  // births come first: drop expired ones from the front and stop at the first live one. Each entry
+  // is dropped at most once, so a flood of joins costs O(1) each rather than a scan per join.
+  const ramp = rampMs();
+  for (const [k, at] of born) {
+    if (t - at < ramp) break;
+    born.delete(k);
+  }
+  born.delete(key);
+  born.set(key, t);
+  // Hard bound: past BORN_MAX the oldest entries go first. Those keys then count as established,
+  // at the per-key rate; the address ceiling still holds them.
+  while (born.size > BORN_MAX) born.delete(born.keys().next().value);
+}
+
+/** When `key` was minted, if that was within the ramp; otherwise null (established). */
+function bornAt(key, t) {
+  const at = born.get(key);
+  if (at === undefined) return null;
+  if (t - at >= rampMs()) {
+    born.delete(key);
+    return null;
+  }
+  return at;
+}
+
+/** The bucket for one spec at time t, refilled but not yet charged. */
+function refill(spec, t) {
+  const cap = allowance(spec.limit, spec.bornAt, t);
+  let b = buckets.get(spec.key);
+  let created = false;
+  if (!b) {
+    // A full sweep at most every PRUNE_EVERY_MS, so a flood of new keys can't make every
+    // request scan the whole map.
+    if (buckets.size >= PRUNE_AT && t - lastPruneAt >= PRUNE_EVERY_MS) prune(t);
+    b = { tokens: cap, at: t, limit: spec.limit };
+    buckets.set(spec.key, b);
+    created = true;
+  } else {
+    b.tokens = Math.min(cap, b.tokens + ((t - b.at) * cap) / 60000);
+    b.at = t;
+    b.limit = spec.limit;
+  }
+  return { key: spec.key, b, cap, created };
+}
+
+/**
+ * Take one post from every bucket in `specs` ({ key, limit, bornAt? }), or from none of them.
+ * Returns 0 when the post may go ahead, otherwise how many milliseconds until every bucket has a
+ * post to spare. A spec whose limit is 0 is skipped (that rung is off).
+ */
+function take(specs) {
+  const t = clock();
+  const live = specs.filter((s) => s && s.limit > 0).map((s) => refill(s, t));
+  let waitMs = 0;
+  for (const { b, cap } of live) {
+    if (b.tokens < 1) waitMs = Math.max(waitMs, Math.ceil(((1 - b.tokens) * 60000) / cap));
+  }
+  if (waitMs) {
+    // A refused post leaves nothing behind: a bucket made just now for it is full anyway.
+    for (const { key, created } of live) if (created) buckets.delete(key);
+    return waitMs;
+  }
+  for (const { b } of live) b.tokens -= 1;
+  return 0;
+}
+
+/**
+ * Take one post from `key`'s bucket at the per-key rate (MCP connectors, which are configured by
+ * the operator and so start at the full rate). Returns 0, or the wait in milliseconds.
+ */
+function takePost(key) {
+  return take([{ key, limit: perMinute() }]);
+}
+
+/**
+ * One Open post: the per-key bucket (a guest or an AI credential, at OPEN_POST_RATE_PER_MIN, keys
+ * marked new ramping up) and the address ceiling above it (OPEN_POST_IP_RATE_PER_MIN), so a fresh
+ * key from the same address doesn't buy a fresh allowance. Requests with no trustworthy address
+ * share the fallback bucket, held to the per-key rate. OPEN_POST_RATE_PER_MIN=0 turns all of it off.
+ */
+function takeOpenPost(ipKey, key) {
+  const limit = perMinute();
+  if (!limit) return 0;
+  const ipLimit = ipKey === FALLBACK_KEY ? limit : ipPerMinute();
+  return take([
+    { key: ipKey, limit: ipLimit },
+    key ? { key, limit, bornAt: bornAt(key, clock()) } : null,
+  ]);
+}
+
+/** Human stream posts (/api/human) have no guest key yet, so they are keyed by address alone,
+ * in their own buckets at HUMAN_POST_RATE_PER_MIN (default 30; 0 turns it off). */
+function takeHumanPost(ipKey) {
+  return take([{ key: `human:${ipKey}`, limit: envNumber('HUMAN_POST_RATE_PER_MIN', DEFAULT_PER_MIN) }]);
+}
+
+/** Drops buckets that have refilled completely (a full bucket behaves the same as a new one,
+ * except for a key still ramping up, which keeps its bucket until it has). */
+function prune(t) {
+  lastPruneAt = t;
   for (const [k, b] of buckets) {
-    if (b.tokens + (t - b.at) / msPerPost >= limit) buckets.delete(k);
+    if (b.tokens + ((t - b.at) * b.limit) / 60000 >= b.limit) buckets.delete(k);
   }
 }
 
 function _reset() {
   buckets.clear();
+  born.clear();
+  warnedKnobs.clear();
+  lastPruneAt = -Infinity;
   loggedStates.clear();
   warnedHeader = null;
   clock = () => Date.now();
@@ -194,7 +346,31 @@ function _setClock(fn) {
   clock = fn;
 }
 
+/** Map sizes, for tests. */
+function _sizes() {
+  return { buckets: buckets.size, born: born.size };
+}
+
 // Check the configured header at startup, so a typo warns in the boot log before the first post.
 clientIpHeader();
 
-module.exports = { takePost, clientKey, clientIpHeader, addressKey, FALLBACK_KEY, KNOWN_HEADERS, DEFAULT_PER_MIN, _reset, _setClock, _buckets: buckets };
+module.exports = {
+  _sizes,
+  takePost,
+  takeOpenPost,
+  takeHumanPost,
+  markNew,
+  allowance,
+  clientKey,
+  clientIpHeader,
+  addressKey,
+  FALLBACK_KEY,
+  KNOWN_HEADERS,
+  DEFAULT_PER_MIN,
+  DEFAULT_IP_PER_MIN,
+  DEFAULT_NEW_KEY_BURST,
+  DEFAULT_NEW_KEY_RAMP_MS,
+  _reset,
+  _setClock,
+  _buckets: buckets,
+};

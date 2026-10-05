@@ -1,7 +1,13 @@
 /**
- * Post rate limit (R12-1b): each client address gets OPEN_POST_RATE_PER_MIN posts a minute, then 429.
+ * Post rate limit (R12-1b, soft-first ladder): each key (guest or AI credential) gets
+ * OPEN_POST_RATE_PER_MIN posts a minute, every key from one address shares
+ * OPEN_POST_IP_RATE_PER_MIN, new keys ramp up, and /api/human is limited by address.
+ * Small numbers here; the burst (default 5) is above the per-key 3, so the ramp only shows in the
+ * tests that set it.
  */
 process.env.OPEN_POST_RATE_PER_MIN = '3';
+process.env.OPEN_POST_IP_RATE_PER_MIN = '5';
+process.env.HUMAN_POST_RATE_PER_MIN = '2';
 const { describe, it, before, after, beforeEach } = require('node:test');
 const { guestHeaders, remember } = require('./guest-jar');
 const assert = require('node:assert/strict');
@@ -42,20 +48,38 @@ async function json(method, path, body, headers = {}) {
 }
 
 describe('Post rate limit (R12-1b)', () => {
-  it('refuses the fourth post in a minute with 429 and Retry-After, across names and rooms', async () => {
+  it('refuses a key\'s fourth post in a minute with 429, Retry-After and a plain message', async () => {
     const a = (await json('POST', '/api/open/rooms', { title: 'a' })).data.room_id;
     const b = (await json('POST', '/api/open/rooms', { title: 'b' })).data.room_id;
     await json('POST', `/api/open/rooms/${a}/join`, { handle: 'p', party: 'human' });
-    const bot = (await json('POST', `/api/open/rooms/${b}/join`, { agent_id: 'q-bot', party: 'ai' })).data;
+    await json('POST', `/api/open/rooms/${b}/join`, { handle: 'p', party: 'human' });
     assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: 'one' })).status, 201);
-    assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: 'two' })).status, 201);
-    const auth = { Authorization: `Bearer ${bot.credential}` };
-    assert.equal((await json('POST', `/api/open/rooms/${b}/post`, { body: 'three' }, auth)).status, 201);
-    const res = await json('POST', `/api/open/rooms/${b}/post`, { body: 'four' }, auth);
+    assert.equal((await json('POST', `/api/open/rooms/${b}/post`, { handle: 'p', body: 'two' })).status, 201);
+    assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: 'three' })).status, 201);
+    const res = await json('POST', `/api/open/rooms/${b}/post`, { handle: 'p', body: 'four' });
     assert.equal(res.status, 429);
     assert.equal(res.data.error.code, 'rate_limited');
-    assert.ok(Number(res.headers.get('retry-after')) >= 1);
+    const seconds = Number(res.headers.get('retry-after'));
+    assert.ok(seconds >= 1);
+    assert.equal(res.data.error.message, "You're posting quickly.");
+    assert.doesNotMatch(res.data.error.message, /\d/);
     assert.equal(openStore.getRoom(b).messages.length, 1);
+  });
+
+  it('every key from one address shares the address ceiling, so a fresh key does not help', async () => {
+    const a = (await json('POST', '/api/open/rooms', { title: 'a' })).data.room_id;
+    await json('POST', `/api/open/rooms/${a}/join`, { handle: 'p', party: 'human' });
+    const bot = (await json('POST', `/api/open/rooms/${a}/join`, { agent_id: 'q-bot', party: 'ai' })).data;
+    const auth = { Authorization: `Bearer ${bot.credential}` };
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: `p${i}` })).status, 201);
+    }
+    assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { body: 'q0' }, auth)).status, 201);
+    assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { body: 'q1' }, auth)).status, 201);
+    const res = await json('POST', `/api/open/rooms/${a}/post`, { body: 'q2' }, auth);
+    assert.equal(res.status, 429, 'sixth post from the address, though q-bot has one left');
+    assert.ok(Number(res.headers.get('retry-after')) >= 1);
+    assert.equal(openStore.getRoom(a).messages.length, 5);
   });
 
   it('a refused or invalid post does not use up the allowance', async () => {
@@ -90,6 +114,108 @@ describe('Post rate limit (R12-1b)', () => {
     }
   });
 
+  describe('new keys earn their allowance', () => {
+    const saved = {};
+    const set = (k, v) => {
+      if (!(k in saved)) saved[k] = process.env[k];
+      process.env[k] = v;
+    };
+    after(() => {
+      for (const [k, v] of Object.entries(saved)) {
+        if (v === undefined) delete process.env[k];
+        else process.env[k] = v;
+      }
+    });
+    beforeEach(() => {
+      set('OPEN_POST_RATE_PER_MIN', '30');
+      set('OPEN_POST_IP_RATE_PER_MIN', '120');
+      delete process.env.OPEN_POST_NEW_KEY_BURST;
+      delete process.env.OPEN_POST_NEW_KEY_RAMP_MS;
+    });
+
+    it('a fresh key gets 5 at once, then about one every 12 s; an established key gets 30', () => {
+      let t = 5_000_000;
+      rateLimit._setClock(() => t);
+      rateLimit.markNew('guest:new');
+      for (let i = 0; i < 5; i++) assert.equal(rateLimit.takeOpenPost('ip:203.0.113.7', 'guest:new'), 0);
+      const wait = rateLimit.takeOpenPost('ip:203.0.113.7', 'guest:new');
+      assert.ok(wait > 11000 && wait <= 12100, `wait ${wait}`);
+      for (let i = 0; i < 30; i++) assert.equal(rateLimit.takeOpenPost('ip:198.51.100.9', 'guest:old'), 0, `old ${i}`);
+      assert.ok(rateLimit.takeOpenPost('ip:198.51.100.9', 'guest:old') > 0, 'a key never marked new (e.g. from before a restart) gets 30');
+      t += 10 * 60000;
+      for (let i = 0; i < 30; i++) assert.equal(rateLimit.takeOpenPost('ip:203.0.113.7', 'guest:new'), 0, `matured ${i}`);
+    });
+
+    it('the allowance grows evenly to the full rate over 10 minutes', () => {
+      assert.equal(rateLimit.allowance(30, 0, 0), 5);
+      assert.equal(rateLimit.allowance(30, 0, 5 * 60000), 17.5);
+      assert.equal(rateLimit.allowance(30, 0, 10 * 60000), 30);
+      assert.equal(rateLimit.allowance(30, 0, 60 * 60000), 30);
+      assert.equal(rateLimit.allowance(30, null, 0), 30);
+      set('OPEN_POST_NEW_KEY_BURST', '10');
+      set('OPEN_POST_NEW_KEY_RAMP_MS', '0');
+      assert.equal(rateLimit.allowance(30, 0, 0), 30, 'a ramp of 0 turns the rung off');
+      set('OPEN_POST_NEW_KEY_RAMP_MS', '60000');
+      assert.equal(rateLimit.allowance(30, 0, 0), 10);
+    });
+
+    it('a guest minted moments ago is a fresh key over HTTP; its sixth quick post gets 429', async () => {
+      const a = (await json('POST', '/api/open/rooms', { title: 'a' })).data.room_id;
+      await json('POST', `/api/open/rooms/${a}/join`, { handle: 'n', party: 'human' });
+      for (let i = 0; i < 5; i++) {
+        assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'n', body: `m${i}` })).status, 201);
+      }
+      const res = await json('POST', `/api/open/rooms/${a}/post`, { handle: 'n', body: 'm5' });
+      assert.equal(res.status, 429);
+      assert.ok(Number(res.headers.get('retry-after')) >= 11);
+    });
+
+    it('a new AI credential ramps the same way', async () => {
+      const a = (await json('POST', '/api/open/rooms', { title: 'a' })).data.room_id;
+      const bot = (await json('POST', `/api/open/rooms/${a}/join`, { agent_id: 'fresh-bot', party: 'ai' })).data;
+      const auth = { Authorization: `Bearer ${bot.credential}` };
+      for (let i = 0; i < 5; i++) {
+        assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { body: `m${i}` }, auth)).status, 201);
+      }
+      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { body: 'm5' }, auth)).status, 429);
+    });
+
+    it('MCP connectors (configured by the operator) start at the full rate', () => {
+      for (let i = 0; i < 30; i++) assert.equal(rateLimit.takePost('mcp:bot'), 0);
+      assert.ok(rateLimit.takePost('mcp:bot') > 0);
+    });
+  });
+
+  it('/api/human is limited by address until it has guest keys', async () => {
+    const room = (await json('POST', '/api/human/rooms', {})).data.room_id;
+    await json('POST', `/api/human/rooms/${room}/join`, { handle: 'h1', party: 'human' });
+    await json('POST', `/api/human/rooms/${room}/join`, { handle: 'h2', party: 'human' });
+    const post = (handle, body, headers) => json('POST', `/api/human/rooms/${room}/post`, { handle, body, party: 'human' }, headers);
+    assert.equal((await post('h1', 'one')).status, 201);
+    assert.equal((await post('h2', 'two')).status, 201);
+    const res = await post('h1', 'three');
+    assert.equal(res.status, 429, 'a third post from the address, under any name');
+    assert.equal(res.data.error.code, 'rate_limited');
+    assert.ok(Number(res.headers.get('retry-after')) >= 1);
+    process.env.HUMAN_POST_RATE_PER_MIN = '0';
+    try {
+      assert.equal((await post('h1', 'four')).status, 201, 'HUMAN_POST_RATE_PER_MIN=0 turns it off');
+    } finally {
+      process.env.HUMAN_POST_RATE_PER_MIN = '2';
+    }
+  });
+
+  it('Human and Open posts from one address use separate allowances', async () => {
+    const room = (await json('POST', '/api/human/rooms', {})).data.room_id;
+    await json('POST', `/api/human/rooms/${room}/join`, { handle: 'h1', party: 'human' });
+    const a = (await json('POST', '/api/open/rooms', { title: 'a' })).data.room_id;
+    await json('POST', `/api/open/rooms/${a}/join`, { handle: 'p', party: 'human' });
+    for (let i = 0; i < 3; i++) {
+      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: `m${i}` })).status, 201);
+    }
+    assert.equal((await json('POST', `/api/human/rooms/${room}/post`, { handle: 'h1', body: 'h', party: 'human' })).status, 201);
+  });
+
   describe('client address behind Railway (live QC on 3acf30f)', () => {
     const header = process.env.OPEN_CLIENT_IP_HEADER;
     beforeEach(() => {
@@ -108,16 +234,20 @@ describe('Post rate limit (R12-1b)', () => {
 
     it('keys on X-Real-IP even when the internal hop in X-Forwarded-For changes every request', async () => {
       const a = await room();
-      const post = (i, ip) =>
-        json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: `m${i}` }, {
+      await json('POST', `/api/open/rooms/${a}/join`, { handle: 'r', party: 'human' });
+      const post = (who, i, ip) =>
+        json('POST', `/api/open/rooms/${a}/post`, { handle: who, body: `m${i}` }, {
           'X-Real-IP': ip,
           'X-Forwarded-For': `${ip}, 100.64.${i}.${i + 1}`,
         });
-      for (let i = 0; i < 3; i++) assert.equal((await post(i, '203.0.113.7')).status, 201);
-      const res = await post(3, '203.0.113.7');
-      assert.equal(res.status, 429);
+      for (let i = 0; i < 3; i++) assert.equal((await post('p', i, '203.0.113.7')).status, 201);
+      assert.equal((await post('p', 3, '203.0.113.7')).status, 429, 'p is out');
+      assert.equal((await post('r', 4, '203.0.113.7')).status, 201);
+      assert.equal((await post('r', 5, '203.0.113.7')).status, 201);
+      const res = await post('r', 6, '203.0.113.7');
+      assert.equal(res.status, 429, 'the address ceiling (5) holds across hops');
       assert.ok(Number(res.headers.get('retry-after')) >= 1);
-      assert.equal((await post(4, '198.51.100.9')).status, 201, 'another client has its own allowance');
+      assert.equal((await post('r', 7, '198.51.100.9')).status, 201, 'another address has its own ceiling');
     });
 
     const fakeReq = (headers, ip) => ({ ip, get: (n) => headers[n.toLowerCase()] });
@@ -133,8 +263,9 @@ describe('Post rate limit (R12-1b)', () => {
       for (let i = 0; i < 3; i++) {
         assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: `m${i}` })).status, 201);
       }
-      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: 'x' }, { 'X-Real-IP': 'junk' })).status, 429);
-      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'p', body: 'y' }, { 'X-Real-IP': '203.0.113.7' })).status, 201, 'a real address keeps its own allowance');
+      await json('POST', `/api/open/rooms/${a}/join`, { handle: 'r', party: 'human' });
+      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'r', body: 'x' }, { 'X-Real-IP': 'junk' })).status, 429, 'the fallback bucket is held to the per-key rate (3)');
+      assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { handle: 'r', body: 'y' }, { 'X-Real-IP': '203.0.113.7' })).status, 201, 'a real address keeps its own allowance');
     });
 
     it('groups IPv6 by /64 and reads an IPv4-mapped address as IPv4', () => {
@@ -236,4 +367,75 @@ describe('Post rate limit (R12-1b)', () => {
       }
     });
   });
+
+  describe('knobs and cost (QC Handoff 19)', () => {
+    const KNOBS = ['OPEN_POST_NEW_KEY_BURST', 'OPEN_POST_RATE_PER_MIN', 'OPEN_POST_NEW_KEY_RAMP_MS'];
+    let saved;
+    let warn;
+    let warnings;
+    beforeEach(() => {
+      saved = Object.fromEntries(KNOBS.map((k) => [k, process.env[k]]));
+      warnings = [];
+      warn = console.warn;
+      console.warn = (m) => warnings.push(String(m));
+    });
+    const restore = () => {
+      console.warn = warn;
+      for (const k of KNOBS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+      rateLimit._reset();
+    };
+
+    it('a burst of 0 or a fraction falls back to the default with one warning, never an endless wait', () => {
+      try {
+        for (const bad of ['0', '0.5', '-1', 'five']) {
+          rateLimit._reset();
+          warnings.length = 0;
+          process.env.OPEN_POST_RATE_PER_MIN = '30';
+          process.env.OPEN_POST_NEW_KEY_BURST = bad;
+          rateLimit.markNew('k');
+          for (let i = 0; i < 5; i++) assert.equal(rateLimit.takeOpenPost('1.2.3.4', 'k'), 0, `${bad}: post ${i + 1}`);
+          const wait = rateLimit.takeOpenPost('1.2.3.4', 'k');
+          assert.ok(wait > 0 && wait <= 60000, `${bad}: wait ${wait}`);
+          assert.equal(warnings.filter((w) => w.includes('OPEN_POST_NEW_KEY_BURST')).length, 1, bad);
+        }
+      } finally {
+        restore();
+      }
+    });
+
+    it('a fractional rate is not accepted (it could never refill a whole post)', () => {
+      try {
+        rateLimit._reset();
+        process.env.OPEN_POST_RATE_PER_MIN = '0.5';
+        assert.equal(rateLimit.takePost('mcp:x'), 0);
+        assert.equal(warnings.filter((w) => w.includes('OPEN_POST_RATE_PER_MIN')).length, 1);
+      } finally {
+        restore();
+      }
+    });
+
+    it('a flood of new keys mid-ramp stays cheap (no scan per join) and refused posts leave no bucket', () => {
+      try {
+        rateLimit._reset();
+        process.env.OPEN_POST_RATE_PER_MIN = '30';
+        const start = process.hrtime.bigint();
+        for (let i = 0; i < 30000; i++) {
+          rateLimit.markNew(`g${i}`);
+          rateLimit.takeOpenPost('9.9.9.9', `g${i}`);
+        }
+        const ms = Number(process.hrtime.bigint() - start) / 1e6;
+        assert.ok(ms < 3000, `30k joins took ${ms} ms`);
+        // 120 got through on the address ceiling; every refused key left no bucket behind.
+        assert.ok(rateLimit._sizes().buckets <= 121, `buckets ${rateLimit._sizes().buckets}`);
+        for (let i = 30000; i < 60000; i++) rateLimit.markNew(`g${i}`);
+        assert.equal(rateLimit._sizes().born, 50000);
+      } finally {
+        restore();
+      }
+    });
+  });
+
 });
