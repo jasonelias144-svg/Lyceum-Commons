@@ -206,6 +206,9 @@ describe('Room format live|board', () => {
     assert.match(js, /Retry-After/);
     assert.match(js, /showCountdown/);
     assert.match(js, /You can post again now\./);
+    // Join 429 ends with join copy, not post copy (H25 LOW 1).
+    assert.match(js, /You can join again now\./);
+    assert.match(js, /err\.isJoin\s*=\s*\/\\\/join\$\/\.test\(path\)/);
     assert.match(js, /Try again in \$\{left\} second/);
     assert.match(js, /rate_limited/);
     // Poll must not wipe a running countdown (same guard as open.js).
