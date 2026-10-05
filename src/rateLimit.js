@@ -387,6 +387,21 @@ function _sizes() {
   return { buckets: buckets.size, born: born.size };
 }
 
+/**
+ * Read every rate knob once through envNumber so a bad value warns in the boot log,
+ * not only the first time a post hits that rung. Each bad knob still warns once per process.
+ */
+function checkKnobs() {
+  envNumber('OPEN_POST_RATE_PER_MIN', DEFAULT_PER_MIN);
+  envNumber('OPEN_POST_IP_RATE_PER_MIN', DEFAULT_IP_PER_MIN);
+  envNumber('OPEN_POST_NEW_KEY_BURST', DEFAULT_NEW_KEY_BURST, 1);
+  envNumber('OPEN_POST_NEW_KEY_RAMP_MS', DEFAULT_NEW_KEY_RAMP_MS);
+  envNumber('HUMAN_POST_RATE_PER_MIN', DEFAULT_PER_MIN);
+  envNumber('HUMAN_LIVE_POST_RATE_PER_MIN', DEFAULT_HUMAN_LIVE_PER_MIN);
+  envNumber('HUMAN_BOARD_POST_RATE_PER_MIN', DEFAULT_HUMAN_BOARD_PER_MIN);
+  envNumber('HUMAN_POST_IP_RATE_PER_MIN', DEFAULT_HUMAN_IP_PER_MIN);
+}
+
 // Check the configured header at startup, so a typo warns in the boot log before the first post.
 clientIpHeader();
 
@@ -399,6 +414,7 @@ module.exports = {
   allowance,
   clientKey,
   clientIpHeader,
+  checkKnobs,
   addressKey,
   FALLBACK_KEY,
   KNOWN_HEADERS,
