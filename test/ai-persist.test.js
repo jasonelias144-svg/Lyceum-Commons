@@ -3,6 +3,13 @@
  * Store-level: restart = re-attach the same file. Process-level: the real server as a
  * child process, killed with SIGKILL (no graceful save) and started again.
  */
+// These files exercise identity/persistence, not the rate ladder — turn AI limits off.
+process.env.AI_POST_RATE_PER_MIN = '0';
+process.env.AI_POST_IP_RATE_PER_MIN = '0';
+process.env.AI_POST_ROOM_RATE_PER_MIN = '0';
+process.env.AI_JOIN_IP_RATE_PER_MIN = '0';
+process.env.AI_JOIN_AGENT_RATE_PER_MIN = '0';
+
 const { describe, it, after, afterEach } = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('fs');
