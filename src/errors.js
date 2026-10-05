@@ -34,7 +34,7 @@ const CODES = {
   cannot_merge_into_welcome: { status: 400, message: 'Rooms cannot be merged into the welcome lobby.' },
   cannot_merge_root: { status: 400, message: 'Seeded root topic rooms cannot be merged away.' },
   room_merged: { status: 409, message: 'This room was merged; use the target room id.' },
-  rate_limited: { status: 429, message: "You're posting quickly, so you'll be able to post again shortly." },
+  rate_limited: { status: 429, message: "You're posting quickly." },
   warming_up: {
     status: 503,
     message: 'The server just restarted and is still reading older messages. Try again in a few seconds.',

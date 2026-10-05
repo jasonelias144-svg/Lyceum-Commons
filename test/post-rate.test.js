@@ -61,7 +61,8 @@ describe('Post rate limit (R12-1b)', () => {
     assert.equal(res.data.error.code, 'rate_limited');
     const seconds = Number(res.headers.get('retry-after'));
     assert.ok(seconds >= 1);
-    assert.match(res.data.error.message, new RegExp(`post again in ${seconds} seconds?\\.`));
+    assert.equal(res.data.error.message, "You're posting quickly.");
+    assert.doesNotMatch(res.data.error.message, /\d/);
     assert.equal(openStore.getRoom(b).messages.length, 1);
   });
 
@@ -366,4 +367,75 @@ describe('Post rate limit (R12-1b)', () => {
       }
     });
   });
+
+  describe('knobs and cost (QC Handoff 19)', () => {
+    const KNOBS = ['OPEN_POST_NEW_KEY_BURST', 'OPEN_POST_RATE_PER_MIN', 'OPEN_POST_NEW_KEY_RAMP_MS'];
+    let saved;
+    let warn;
+    let warnings;
+    beforeEach(() => {
+      saved = Object.fromEntries(KNOBS.map((k) => [k, process.env[k]]));
+      warnings = [];
+      warn = console.warn;
+      console.warn = (m) => warnings.push(String(m));
+    });
+    const restore = () => {
+      console.warn = warn;
+      for (const k of KNOBS) {
+        if (saved[k] === undefined) delete process.env[k];
+        else process.env[k] = saved[k];
+      }
+      rateLimit._reset();
+    };
+
+    it('a burst of 0 or a fraction falls back to the default with one warning, never an endless wait', () => {
+      try {
+        for (const bad of ['0', '0.5', '-1', 'five']) {
+          rateLimit._reset();
+          warnings.length = 0;
+          process.env.OPEN_POST_RATE_PER_MIN = '30';
+          process.env.OPEN_POST_NEW_KEY_BURST = bad;
+          rateLimit.markNew('k');
+          for (let i = 0; i < 5; i++) assert.equal(rateLimit.takeOpenPost('1.2.3.4', 'k'), 0, `${bad}: post ${i + 1}`);
+          const wait = rateLimit.takeOpenPost('1.2.3.4', 'k');
+          assert.ok(wait > 0 && wait <= 60000, `${bad}: wait ${wait}`);
+          assert.equal(warnings.filter((w) => w.includes('OPEN_POST_NEW_KEY_BURST')).length, 1, bad);
+        }
+      } finally {
+        restore();
+      }
+    });
+
+    it('a fractional rate is not accepted (it could never refill a whole post)', () => {
+      try {
+        rateLimit._reset();
+        process.env.OPEN_POST_RATE_PER_MIN = '0.5';
+        assert.equal(rateLimit.takePost('mcp:x'), 0);
+        assert.equal(warnings.filter((w) => w.includes('OPEN_POST_RATE_PER_MIN')).length, 1);
+      } finally {
+        restore();
+      }
+    });
+
+    it('a flood of new keys mid-ramp stays cheap (no scan per join) and refused posts leave no bucket', () => {
+      try {
+        rateLimit._reset();
+        process.env.OPEN_POST_RATE_PER_MIN = '30';
+        const start = process.hrtime.bigint();
+        for (let i = 0; i < 30000; i++) {
+          rateLimit.markNew(`g${i}`);
+          rateLimit.takeOpenPost('9.9.9.9', `g${i}`);
+        }
+        const ms = Number(process.hrtime.bigint() - start) / 1e6;
+        assert.ok(ms < 3000, `30k joins took ${ms} ms`);
+        // 120 got through on the address ceiling; every refused key left no bucket behind.
+        assert.ok(rateLimit._sizes().buckets <= 121, `buckets ${rateLimit._sizes().buckets}`);
+        for (let i = 30000; i < 60000; i++) rateLimit.markNew(`g${i}`);
+        assert.equal(rateLimit._sizes().born, 50000);
+      } finally {
+        restore();
+      }
+    });
+  });
+
 });
