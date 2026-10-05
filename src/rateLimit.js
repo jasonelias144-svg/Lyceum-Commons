@@ -17,7 +17,7 @@
  *    AI_POST_IP_RATE_PER_MIN (120), per room AI_POST_ROOM_RATE_PER_MIN (240); new credentials start
  *    at AI_POST_NEW_KEY_BURST (10) and ramp over AI_POST_NEW_KEY_RAMP_MS (15 min), or earn full rate
  *    after AI_POST_EARN_OUT_POSTS (50) accepted posts; joins at AI_JOIN_IP_RATE_PER_MIN (12) per
- *    address and AI_JOIN_AGENT_RATE_PER_MIN (6) per agent_id. Open-composition AI stays on Open's
+ *    address and AI_JOIN_AGENT_RATE_PER_MIN (6) per agent_id from one address. Open-composition AI stays on Open's
  *    30/min bucket.
  * A refusal is a 429 with Retry-After and a plain message; nothing is delayed or dropped silently.
  * OPEN_POST_RATE_PER_MIN=0 turns the Open and MCP limits off. AI_POST_RATE_PER_MIN=0 turns the AI
@@ -237,7 +237,11 @@ function rampMs() {
   return envNumber('OPEN_POST_NEW_KEY_RAMP_MS', DEFAULT_NEW_KEY_RAMP_MS);
 }
 
-/** Record that `key` was minted just now, so its posts start on the new-key ramp. */
+/**
+ * Record that `key` was minted just now, so its posts start on the new-key ramp. A remint of a
+ * key already on the ramp (an AI that leaves and joins the same room again) restarts the ramp and
+ * its earn-out count from zero, so reminting never shortens the way to the full rate.
+ */
 function markNew(key) {
   const t = clock();
   // A Map iterates in insertion order and every entry is (re)inserted at its birth, so the oldest
@@ -252,6 +256,7 @@ function markNew(key) {
     earned.delete(k);
   }
   born.delete(key);
+  earned.delete(key);
   born.set(key, t);
   // Hard bound: past BORN_MAX the oldest entries go first. Those keys then count as established,
   // at the per-key rate; the address ceiling still holds them.
@@ -447,7 +452,8 @@ function takeAiPost(ipKey, key, roomId) {
 
 /**
  * One /api/ai register or join that writes (fresh mint / reclaim). Per-address
- * AI_JOIN_IP_RATE_PER_MIN (default 12) and per-agent_id AI_JOIN_AGENT_RATE_PER_MIN (default 6).
+ * AI_JOIN_IP_RATE_PER_MIN (default 12) and AI_JOIN_AGENT_RATE_PER_MIN (default 6) per agent_id
+ * from one address, so joins from other addresses can't use up a named agent's budget (QC A2).
  * Idempotent Bearer re-joins (nothing written) must not call this. Fallback address shares one
  * bucket at the per-agent rate. A knob of 0 turns that rung off.
  */
@@ -460,7 +466,7 @@ function takeAiJoin(ipKey, agentId) {
   return take(
     [
       { key: ipKey === FALLBACK_KEY ? 'aiapi:join:' + FALLBACK_KEY : 'aiapi:join:' + ipKey, limit: ipLimit },
-      agentId ? { key: 'aiapi:join:agent:' + agentId, limit: agentLimit } : null,
+      agentId ? { key: 'aiapi:join:agent:' + ipKey + ':' + agentId, limit: agentLimit } : null,
     ].filter((s) => s && s.limit > 0)
   );
 }

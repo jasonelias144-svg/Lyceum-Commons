@@ -316,6 +316,27 @@ describe('AI stream (/api/ai) rate limit', () => {
     assert.equal((await json('POST', `/api/open/rooms/${a}/post`, { body: 'm3' }, auth)).status, 429);
   });
 
+  it('the per-agent_id join budget is per address, so other addresses cannot use it up (A2)', () => {
+    rateLimit._reset();
+    // agent=2, IP=3 in this file.
+    assert.equal(rateLimit.takeAiJoin('ip:7.7.7.7', 'named-bot'), 0);
+    assert.equal(rateLimit.takeAiJoin('ip:7.7.7.7', 'named-bot'), 0);
+    assert.ok(rateLimit.takeAiJoin('ip:7.7.7.7', 'named-bot') > 0, 'third from the same address is refused');
+    // The same agent_id from its own address still has its full budget.
+    assert.equal(rateLimit.takeAiJoin('ip:8.8.8.8', 'named-bot'), 0);
+    assert.equal(rateLimit.takeAiJoin('ip:8.8.8.8', 'named-bot'), 0);
+    assert.ok(rateLimit.takeAiJoin('ip:8.8.8.8', 'named-bot') > 0);
+  });
+
+  it('a remint restarts the earn-out count along with the ramp', () => {
+    rateLimit._reset();
+    rateLimit.markNew('aiapi:r1:remint-bot');
+    assert.equal(rateLimit.takeAiPost('ip:6.6.6.6', 'aiapi:r1:remint-bot', 'r1'), 0);
+    assert.equal(rateLimit._sizes().earned, 1);
+    rateLimit.markNew('aiapi:r1:remint-bot');
+    assert.equal(rateLimit._sizes().earned, 0);
+  });
+
   it('AI_JOIN_* = 0 turns join limits off', () => {
     process.env.AI_JOIN_IP_RATE_PER_MIN = '0';
     process.env.AI_JOIN_AGENT_RATE_PER_MIN = '0';
