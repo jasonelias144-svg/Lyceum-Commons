@@ -898,11 +898,26 @@ function releaseIdle(room) {
 }
 
 /** Lazy housekeeping on every read or change: expire idle parties, release idle names, prune the turn. */
+function heldGuestIds() {
+  const held = new Set();
+  for (const room of openRooms.values()) {
+    for (const [key, rec] of Object.entries(membersOf(room))) {
+      if (key.startsWith('human:') && rec && rec.owner) held.add(rec.owner);
+    }
+  }
+  return held;
+}
+
 function sweep(room) {
   const expired = expireIdle(room);
   releaseIdle(room);
   pruneAwaiting(room);
   return expired;
+}
+
+/** Drop guest records that hold no names. Called from snapshot serialize (not on leave). */
+function pruneGuestRecords() {
+  return guestRegistry.pruneEmpty(heldGuestIds());
 }
 
 /**
@@ -1204,6 +1219,7 @@ module.exports = {
   authenticate,
   touch,
   sweep,
+  pruneGuestRecords,
   hasHuman,
   hasAi,
   leaveHuman,
