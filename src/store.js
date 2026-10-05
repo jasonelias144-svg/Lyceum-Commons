@@ -193,3 +193,479 @@ function branchRoom(parent, { title } = {}) {
   rooms.set(id, room);
   return room;
 }
+
+function resolveMergeDest(target) {
+  let dest = target;
+  const seen = new Set();
+  while (dest.merged_into) {
+    if (seen.has(dest.id)) break;
+    seen.add(dest.id);
+    const next = rooms.get(dest.merged_into);
+    if (!next) break;
+    dest = next;
+  }
+  return dest;
+}
+
+/** Structural merge policy (no mutation). Throws err.code for protocol mapping. */
+function assertMergeAllowed(source, target) {
+  if (!source || !target) throw new Error('source and target required');
+  if (source.id === target.id) {
+    const err = new Error('cannot_merge_self');
+    err.code = 'cannot_merge_self';
+    throw err;
+  }
+  if (source.id === WELCOME_ROOM_ID) {
+    const err = new Error('cannot_merge_welcome');
+    err.code = 'cannot_merge_welcome';
+    throw err;
+  }
+  if (isRootTopic(source.id)) {
+    const err = new Error('cannot_merge_root');
+    err.code = 'cannot_merge_root';
+    throw err;
+  }
+  if (source.merged_into) {
+    const err = new Error('already_merged');
+    err.code = 'already_merged';
+    throw err;
+  }
+  const dest = resolveMergeDest(target);
+  if (dest.id === source.id) {
+    const err = new Error('cannot_merge_self');
+    err.code = 'cannot_merge_self';
+    throw err;
+  }
+  if (dest.id === WELCOME_ROOM_ID) {
+    const err = new Error('cannot_merge_into_welcome');
+    err.code = 'cannot_merge_into_welcome';
+    throw err;
+  }
+  return dest;
+}
+
+function mergeRooms(source, target) {
+  const dest = assertMergeAllowed(source, target);
+
+  const incoming = source.messages
+    .slice()
+    .sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+  const existingIds = new Set(dest.messages.map((m) => m.id));
+  let moved = 0;
+  for (const msg of incoming) {
+    if (existingIds.has(msg.id)) continue;
+    dest.messages.push({
+      ...msg,
+      room_id: dest.id,
+      id: msg.id.startsWith('msg_merged_') ? msg.id : `msg_merged_${msg.id}`,
+    });
+    existingIds.add(msg.id);
+    moved += 1;
+  }
+  dest.messages.sort((a, b) => String(a.created_at).localeCompare(String(b.created_at)));
+
+  const at = new Date().toISOString();
+  const edge = { at, into: dest.id, from: source.id, moved };
+  dest.merge_history = dest.merge_history || [];
+  dest.merge_history.push(edge);
+  source.merge_history = source.merge_history || [];
+  source.merge_history.push(edge);
+
+  source.merged_into = dest.id;
+  source.roster.clear();
+  source.members = {};
+  source.messages = [
+    hostOrientationMessage(
+      source.id,
+      `This room was merged into ${dest.title || dest.id}. The thread continues there.`
+    ),
+  ];
+
+  dest.messages.push(
+    hostOrientationMessage(
+      dest.id,
+      `Merged in discussion from ${source.title || source.id} (${moved} message${moved === 1 ? '' : 's'}).`
+    )
+  );
+
+  return { source, target: dest, moved };
+}
+
+function ensureWelcomeLobby() {
+  const existing = rooms.get(WELCOME_ROOM_ID);
+  if (existing) {
+    if (!existing.title) existing.title = WELCOME_TITLE;
+    if (existing.parent_id === undefined) existing.parent_id = null;
+    if (existing.merged_into === undefined) existing.merged_into = null;
+    if (!existing.merge_history) existing.merge_history = [];
+    existing.format = FORMAT_LIVE;
+    return existing;
+  }
+  const room = makeRoom({
+    id: WELCOME_ROOM_ID,
+    title: WELCOME_TITLE,
+    parent_id: null,
+    format: FORMAT_LIVE,
+  });
+  rooms.set(WELCOME_ROOM_ID, room);
+  return room;
+}
+
+function ensureTopicRoom({ id, title, host_body }) {
+  const existing = rooms.get(id);
+  if (existing) {
+    if (!existing.title) existing.title = title;
+    if (existing.parent_id === undefined) existing.parent_id = null;
+    if (existing.merged_into === undefined) existing.merged_into = null;
+    if (!existing.merge_history) existing.merge_history = [];
+    existing.format = FORMAT_BOARD;
+    if (existing.messages.length === 0 && host_body) {
+      existing.messages.push(hostOrientationMessage(id, host_body, { stable: true }));
+    }
+    return existing;
+  }
+  const room = makeRoom({ id, title, parent_id: null, format: FORMAT_BOARD });
+  if (host_body) {
+    room.messages.push(hostOrientationMessage(id, host_body, { stable: true }));
+  }
+  rooms.set(id, room);
+  return room;
+}
+
+function ensureSeededRooms() {
+  ensureWelcomeLobby();
+  for (const seed of TOPIC_SEEDS) {
+    ensureTopicRoom(seed);
+  }
+}
+
+function listTopics() {
+  return TOPIC_SEEDS.map((seed) => {
+    const room = rooms.get(seed.id) || ensureTopicRoom(seed);
+    sweep(room);
+    return {
+      id: room.id,
+      title: room.title || seed.title,
+      roster_count: room.roster.size,
+      message_count: room.messages.length,
+      parent_id: room.parent_id ?? null,
+      merged_into: room.merged_into ?? null,
+      format: room.format || FORMAT_BOARD,
+    };
+  });
+}
+
+/**
+ * Membership is separate from presence (Open's model). Joining makes you a member and seats you;
+ * only leave ends membership. Presence expiry takes you off the roster (frees a capacity slot)
+ * but keeps the name reserved to your guest key until leave or the 30-day release.
+ */
+function membersOf(room) {
+  if (!room.members || typeof room.members !== 'object') {
+    room.members = {};
+  }
+  const members = room.members;
+  // Promote roster-only entries (older snapshots / fixtures) that are not yet in members.
+  for (const [handle, entry] of room.roster) {
+    if (members[handle]) continue;
+    if (entry && entry.owner) {
+      members[handle] = { owner: entry.owner, last_active: entry.last_active || entry.joined_at };
+    } else if (entry) {
+      // Pre-guest-key seat: no owner; release clock starts at this boot.
+      members[handle] = { owner: null, last_active: new Date(presenceEpoch).toISOString() };
+    }
+  }
+  return members;
+}
+
+function hasHuman(room, handle) {
+  return room.roster.has(handle);
+}
+
+function isMember(room, handle) {
+  return room.roster.has(handle) || Boolean(membersOf(room)[handle]);
+}
+
+/** True when this Human guest holds `handle` in this room (present or away). */
+function ownsHuman(room, handle, gid) {
+  if (!gid) return false;
+  const rec = membersOf(room)[handle];
+  return Boolean(rec && rec.owner === gid);
+}
+
+/** The distinct exact names this Human guest holds across all Human rooms. */
+function namesHeldBy(gid) {
+  const names = new Set();
+  if (!gid) return names;
+  for (const room of rooms.values()) {
+    for (const [handle, rec] of Object.entries(membersOf(room))) {
+      if (rec && rec.owner === gid) names.add(handle);
+    }
+  }
+  return names;
+}
+
+/** True when this Human guest holds the exact name in any Human room. */
+function guestHolds(gid, handle) {
+  for (const room of rooms.values()) {
+    if (ownsHuman(room, handle, gid)) return true;
+  }
+  return false;
+}
+
+/** Every guest id that still holds at least one Human name. */
+function heldGuestIds() {
+  const held = new Set();
+  for (const room of rooms.values()) {
+    for (const rec of Object.values(membersOf(room))) {
+      if (rec && rec.owner) held.add(rec.owner);
+    }
+  }
+  return held;
+}
+
+/** A name that folds (nameKey) to the same thing as someone else's membership is taken. */
+function assertNoLookalike(room, handle) {
+  const wanted = nameKey(handle);
+  for (const other of Object.keys(membersOf(room))) {
+    if (other !== handle && nameKey(other) === wanted) throw nameTakenError();
+  }
+}
+
+/**
+ * When a seat was last seen, for presence expiry. Matches Open: owned seats get one fresh TTL
+ * from this boot (max(seen, presenceEpoch)); unclaimed pre-guest seats count as away at once
+ * when restored from before this boot, so nothing refreshes them into a predictable mass expiry.
+ */
+function lastSeenMs(entry, room) {
+  const seen = Date.parse(entry.last_seen || entry.joined_at) || 0;
+  if (room) {
+    const rec = membersOf(room)[entry.handle];
+    if (rec && typeof rec === 'object' && !rec.owner) return seen < presenceEpoch ? 0 : seen;
+  }
+  return Math.max(seen, presenceEpoch);
+}
+
+/** Drop idle seats off the roster (capacity); membership stays. */
+function expireIdle(room) {
+  membersOf(room);
+  const ttl = presenceTtlMs();
+  if (!ttl) return [];
+  const t = clock();
+  const expired = [];
+  for (const [handle, entry] of Array.from(room.roster.entries())) {
+    const seen = lastSeenMs(entry, room);
+    // Restored entries (no last_seen, or one from before this boot) show the boot time.
+    if (!entry.last_seen || Date.parse(entry.last_seen) < seen) entry.last_seen = new Date(seen).toISOString();
+    if (t - seen > ttl) {
+      room.roster.delete(handle);
+      expired.push(handle);
+    }
+  }
+  return expired;
+}
+
+/** Release memberships with no activity for 30 days and nobody present under the name. */
+function releaseIdle(room) {
+  const members = membersOf(room);
+  const t = clock();
+  const released = [];
+  for (const [handle, rec] of Object.entries(members)) {
+    if (!rec || typeof rec !== 'object' || room.roster.has(handle)) continue;
+    if (!releaseDue(rec.last_active, t)) continue;
+    delete members[handle];
+    released.push(handle);
+  }
+  return released;
+}
+
+/**
+ * Lazy housekeeping on every read: expire idle seats, release idle names, drop ownerless
+ * legacy seats, and prune guest records that hold nothing.
+ */
+function sweep(room) {
+  const members = membersOf(room);
+  // Pre-guest-key / ownerless: drop from roster and members (claimable by first joiner).
+  for (const [handle, rec] of Object.entries(members)) {
+    if (rec && !rec.owner) {
+      delete members[handle];
+      room.roster.delete(handle);
+    }
+  }
+  expireIdle(room);
+  releaseIdle(room);
+  return [];
+}
+
+/** Drop guest records that hold no names. Called from snapshot serialize (not on leave). */
+function pruneGuestRecords() {
+  return guestRegistry.pruneEmpty(heldGuestIds());
+}
+
+function getRoom(id) {
+  const room = rooms.get(id) || null;
+  if (room) sweep(room);
+  return room;
+}
+
+/**
+ * Join (or re-join) `handle` as Human guest `gid`. Returns { room, created, guest_key }.
+ * A held name answers only to its owner. Presence expiry frees a capacity slot but the name
+ * stays reserved: the holder rejoins without minting a new key and without a room_full check
+ * against their own reserved seat. Capacity counts present seats only.
+ */
+function joinHuman(room, handle, gid = null) {
+  sweep(room);
+  const members = membersOf(room);
+  const rec = members[handle] && typeof members[handle] === 'object' ? members[handle] : null;
+  if (!rec && !nameAllowed(handle)) throw protocolError('invalid_handle');
+  assertNotHeldByOther(rec, gid);
+  assertNoLookalike(room, handle);
+  const present = room.roster.has(handle);
+  const claim = assertClaimable(rec, present);
+  if (!present && !rec && room.roster.size >= MAX_PARTIES) throw protocolError('room_full');
+  // Rejoining an owned-but-away name: capacity only if the room is full of *other* present seats.
+  if (!present && rec && rec.owner === gid && room.roster.size >= MAX_PARTIES) {
+    throw protocolError('room_full');
+  }
+  assertUnderNameCap(gid, rec, {
+    holdsName: () => guestHolds(gid, handle),
+    heldCount: () => namesHeldBy(gid).size,
+  });
+  let guestKey = null;
+  if (!gid) ({ key: guestKey, gid } = guestRegistry.mint());
+  const at = nowIso();
+  if (claim) {
+    // Nothing to hand over on Human (no webhooks); membership is rewritten below.
+  }
+  members[handle] = { owner: gid, last_active: at };
+  if (present) {
+    touch(room, handle);
+  } else {
+    room.roster.set(handle, { handle, joined_at: at, last_seen: at });
+  }
+  return { room, created: !present && !rec, guest_key: guestKey };
+}
+
+/** Seat the guest that branched a room in the new branch under the same name (no new name). */
+function seatInBranch(room, handle, gid) {
+  const at = nowIso();
+  membersOf(room)[handle] = { owner: gid, last_active: at };
+  room.roster.set(handle, { handle, joined_at: at, last_seen: at });
+}
+
+/** Record activity under a name (keeps the seat and the 30-day release clock). */
+function touch(room, handle) {
+  const at = nowIso();
+  const entry = room.roster.get(handle);
+  if (entry) entry.last_seen = at;
+  const rec = membersOf(room)[handle];
+  if (rec && typeof rec === 'object') rec.last_active = at;
+  return Boolean(entry);
+}
+
+/** Explicit leave: off the roster and no longer a member (name is free). */
+function leaveHuman(room, handle) {
+  const members = membersOf(room);
+  const was = room.roster.has(handle) || Boolean(members[handle]);
+  delete members[handle];
+  room.roster.delete(handle);
+  return was;
+}
+
+function listRoster(room) {
+  return Array.from(room.roster.values()).map((p) => ({
+    handle: p.handle,
+    party: 'human',
+    joined_at: p.joined_at,
+    last_seen: p.last_seen || p.joined_at,
+  }));
+}
+
+function listGuestbook() {
+  return guestbook.slice();
+}
+
+function addGuestbookSignature({ handle, body }) {
+  const signature = {
+    id: newId('gb'),
+    handle,
+    body,
+    created_at: new Date().toISOString(),
+  };
+  guestbook.unshift(signature);
+  return signature;
+}
+
+/** Snapshot helpers (persist.js). */
+function _getGuestbook() {
+  return guestbook;
+}
+
+function _setGuestbook(list) {
+  guestbook = Array.isArray(list) ? list : [];
+}
+
+function clearAll() {
+  rooms.clear();
+  guestRegistry.clear();
+  guestbook = [];
+  presenceEpoch = clock();
+  ensureSeededRooms();
+}
+
+ensureSeededRooms();
+
+module.exports = {
+  MAX_PARTIES,
+  WELCOME_ROOM_ID,
+  WELCOME_TITLE,
+  GUESTBOOK_BODY_MAX,
+  FORMAT_LIVE,
+  FORMAT_BOARD,
+  BODY_CAP_LIVE,
+  BODY_CAP_BOARD,
+  HOST_HANDLE,
+  TOPIC_SEEDS,
+  ROOT_TOPIC_IDS,
+  isRootTopic,
+  normalizeFormat,
+  bodyCapForFormat,
+  createRoom,
+  branchRoom,
+  mergeRooms,
+  assertMergeAllowed,
+  ensureWelcomeLobby,
+  ensureTopicRoom,
+  ensureSeededRooms,
+  listTopics,
+  getRoom,
+  sweep,
+  resolveGuest,
+  joinHuman,
+  seatInBranch,
+  ownsHuman,
+  hasHuman,
+  isMember,
+  touch,
+  leaveHuman,
+  pruneGuestRecords,
+  listRoster,
+  presenceTtlMs,
+  DEFAULT_PRESENCE_TTL_MS,
+  MIN_PRESENCE_TTL_MS,
+  listGuestbook,
+  addGuestbookSignature,
+  clearAll,
+  _rooms: rooms,
+  _guests: guestRegistry.guests,
+  _setClock,
+  /** Tests: pretend the server booted at `ms` (default now). */
+  _setPresenceEpoch(ms) {
+    const was = presenceEpoch;
+    presenceEpoch = ms === undefined ? clock() : ms;
+    return was;
+  },
+  _getGuestbook,
+  _setGuestbook,
+};
