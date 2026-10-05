@@ -5,6 +5,7 @@
  */
 const express = require('express');
 const store = require('./store');
+const rateLimit = require('./rateLimit');
 const { protocolError, sendError } = require('./errors');
 
 const router = express.Router();
@@ -57,6 +58,12 @@ router.post('/', (req, res) => {
     assertHumanFacing(party);
     const handle = validateHandle(rawHandle);
     const body = validateSignatureBody(rawBody);
+    const waitMs = rateLimit.takeHumanGuestbook(rateLimit.clientKey(req));
+    if (waitMs) {
+      const secs = Math.ceil(waitMs / 1000);
+      res.set('Retry-After', String(secs));
+      throw protocolError('rate_limited');
+    }
     const signature = store.addGuestbookSignature({ handle, body });
     res.status(201).json({ signature });
   } catch (err) {
