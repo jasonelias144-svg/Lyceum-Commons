@@ -11,8 +11,29 @@
  * No fake guests, no fabricated back-and-forth.
  * Room format: welcome → live (200); topic roots + private create → board (4000);
  * branches inherit parent format. Cycle A: fixed at create/seed.
+ *
+ * Guest identity (same rules as Open, logic shared through guestIdentity.js, data kept here and
+ * nowhere else): every roster entry is { handle, joined_at, owner, last_active }, where owner is
+ * the Human guest id holding the name. Human guest keys live in this store's own registry, so an
+ * Open key means nothing here. The Human stream has no presence expiry, so the roster is the
+ * membership: a name is held from join until leave, or until it has gone unused for 30 days.
+ * Roster entries from before guest keys (no owner) prove nothing about who used them; they count
+ * as away from the moment this change goes live and are dropped on the room's next read, so the
+ * first person to join with that name gets it (as Open does for its unclaimed names).
  */
 const crypto = require('crypto');
+const { protocolError } = require('./errors');
+const guestIdentity = require('./guestIdentity');
+
+const {
+  nameKey,
+  nameAllowed,
+  releaseDue,
+  nameTakenError,
+  assertNotHeldByOther,
+  assertClaimable,
+  assertUnderNameCap,
+} = guestIdentity;
 
 const MAX_PARTIES = 16;
 /** Stable always-on Human welcome lobby (hotel / conference-center arrival). */
@@ -44,6 +65,26 @@ let guestbook = [];
 
 function newId(prefix) {
   return `${prefix}_${crypto.randomBytes(8).toString('hex')}`;
+}
+
+/** Injectable clock for guest-name bookkeeping (tests replace it so nothing has to sleep). */
+let clock = () => Date.now();
+
+function nowIso() {
+  return new Date(clock()).toISOString();
+}
+
+/** Replace the clock; call with no argument to restore Date.now. */
+function _setClock(fn) {
+  clock = typeof fn === 'function' ? fn : () => Date.now();
+}
+
+/** The Human stream's own guest registry (sha256 of each key → guest record). */
+const guestRegistry = guestIdentity.createGuestRegistry({ newId, nowIso });
+
+/** The Human guest id for a key, or null for a missing, malformed or unknown key. */
+function resolveGuest(key) {
+  return guestRegistry.resolve(key);
 }
 
 function makeRoom({ id, title, parent_id = null, merged_into = null, format = FORMAT_BOARD }) {
@@ -267,6 +308,7 @@ function ensureSeededRooms() {
 function listTopics() {
   return TOPIC_SEEDS.map((seed) => {
     const room = rooms.get(seed.id) || ensureTopicRoom(seed);
+    sweep(room);
     return {
       id: room.id,
       title: room.title || seed.title,
@@ -279,8 +321,110 @@ function listTopics() {
   });
 }
 
+/**
+ * Lazy housekeeping on every read: drop roster entries from before guest keys (no owner), and
+ * release names unused for guestReleaseMs() (30 days). Returns the handles dropped.
+ */
+function sweep(room) {
+  const t = clock();
+  const dropped = [];
+  for (const [handle, entry] of Array.from(room.roster.entries())) {
+    if (!entry || !entry.owner || releaseDue(entry.last_active || entry.joined_at, t)) {
+      room.roster.delete(handle);
+      dropped.push(handle);
+    }
+  }
+  return dropped;
+}
+
 function getRoom(id) {
-  return rooms.get(id) || null;
+  const room = rooms.get(id) || null;
+  if (room) sweep(room);
+  return room;
+}
+
+/** True when this Human guest holds `handle` in this room. */
+function ownsHuman(room, handle, gid) {
+  if (!gid) return false;
+  const entry = room.roster.get(handle);
+  return Boolean(entry && entry.owner === gid);
+}
+
+/** The distinct exact names this Human guest holds across all Human rooms. */
+function namesHeldBy(gid) {
+  const names = new Set();
+  if (!gid) return names;
+  for (const room of rooms.values()) {
+    for (const [handle, entry] of room.roster) {
+      if (entry && entry.owner === gid) names.add(handle);
+    }
+  }
+  return names;
+}
+
+/** True when this Human guest holds the exact name in any Human room. */
+function guestHolds(gid, handle) {
+  for (const room of rooms.values()) {
+    if (ownsHuman(room, handle, gid)) return true;
+  }
+  return false;
+}
+
+/** A name that folds (nameKey) to the same thing as someone else's on this roster is taken. */
+function assertNoLookalike(room, handle) {
+  const wanted = nameKey(handle);
+  for (const other of room.roster.keys()) {
+    if (other !== handle && nameKey(other) === wanted) throw nameTakenError();
+  }
+}
+
+/**
+ * Join (or re-join) `handle` as Human guest `gid` (null when the request had no valid key).
+ * Returns { room, created, guest_key }; guest_key is set only when this join minted one.
+ * Same order of checks as Open's joinHuman: a held name answers only to its own guest, a
+ * lookalike is refused with the same generic handle_taken, then capacity and the 5-name cap;
+ * a key is minted only after every check has passed, so a refused join hands out nothing.
+ */
+function joinHuman(room, handle, gid = null) {
+  sweep(room);
+  const rec = room.roster.get(handle) || null;
+  if (!rec && !nameAllowed(handle)) throw protocolError('invalid_handle');
+  assertNotHeldByOther(rec, gid);
+  assertNoLookalike(room, handle);
+  const present = Boolean(rec);
+  // After sweep every entry has an owner, so this never refuses; kept so the rule reads as Open's.
+  assertClaimable(rec, present);
+  if (!present && room.roster.size >= MAX_PARTIES) throw protocolError('room_full');
+  assertUnderNameCap(gid, rec, {
+    holdsName: () => guestHolds(gid, handle),
+    heldCount: () => namesHeldBy(gid).size,
+  });
+  let guestKey = null;
+  if (!gid) ({ key: guestKey, gid } = guestRegistry.mint());
+  const at = nowIso();
+  if (present) {
+    rec.last_active = at;
+  } else {
+    room.roster.set(handle, { handle, joined_at: at, owner: gid, last_active: at });
+  }
+  return { room, created: !present, guest_key: guestKey };
+}
+
+/** Seat the guest that branched a room in the new branch under the same name (no new name). */
+function seatInBranch(room, handle, gid) {
+  const at = nowIso();
+  room.roster.set(handle, { handle, joined_at: at, owner: gid, last_active: at });
+}
+
+/** Record activity under a name (keeps it from the 30-day release). */
+function touch(room, handle) {
+  const entry = room.roster.get(handle);
+  if (entry) entry.last_active = nowIso();
+  return Boolean(entry);
+}
+
+function leaveHuman(room, handle) {
+  return room.roster.delete(handle);
 }
 
 function listRoster(room) {
@@ -317,6 +461,7 @@ function _setGuestbook(list) {
 
 function clearAll() {
   rooms.clear();
+  guestRegistry.clear();
   guestbook = [];
   ensureSeededRooms();
 }
@@ -347,11 +492,20 @@ module.exports = {
   ensureSeededRooms,
   listTopics,
   getRoom,
+  sweep,
+  resolveGuest,
+  joinHuman,
+  seatInBranch,
+  ownsHuman,
+  touch,
+  leaveHuman,
   listRoster,
   listGuestbook,
   addGuestbookSignature,
   clearAll,
   _rooms: rooms,
+  _guests: guestRegistry.guests,
+  _setClock,
   _getGuestbook,
   _setGuestbook,
 };
