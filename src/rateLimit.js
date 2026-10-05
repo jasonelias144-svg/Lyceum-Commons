@@ -18,10 +18,7 @@ const DEFAULT_PER_MIN = 30;
 const PRUNE_AT = 10000;
 
 function perMinute() {
-  const raw = process.env.OPEN_POST_RATE_PER_MIN;
-  if (raw === undefined || raw === '') return DEFAULT_PER_MIN;
-  const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : DEFAULT_PER_MIN;
+  return envNumber('OPEN_POST_RATE_PER_MIN', DEFAULT_PER_MIN);
 }
 
 /**
@@ -159,13 +156,31 @@ function clientKey(req) {
 }
 
 const buckets = new Map();
+/** Sweep full buckets at most this often once the map is large. */
+const PRUNE_EVERY_MS = 10000;
+let lastPruneAt = -Infinity;
 let clock = () => Date.now();
 
-function envNumber(name, fallback) {
+/** Knobs whose bad value has already been warned about (name -> raw value), so it logs once. */
+const warnedKnobs = new Map();
+
+/**
+ * A whole-number knob from the environment, at least `min` (0 means that rung is off where the
+ * README says so). Anything else (a fraction, a negative, text, Infinity) falls back to the
+ * default with one WARNING, since a value below one post can never refill to a whole post.
+ */
+function envNumber(name, fallback, min = 0) {
   const raw = process.env[name];
-  if (raw === undefined || raw === '') return fallback;
+  if (raw === undefined || String(raw).trim() === '') return fallback;
   const n = Number(raw);
-  return Number.isFinite(n) && n >= 0 ? n : fallback;
+  if (Number.isSafeInteger(n) && n >= min) return n;
+  if (warnedKnobs.get(name) !== raw) {
+    warnedKnobs.set(name, raw);
+    console.warn(
+      `[rate-limit] WARNING: ${name}=${JSON.stringify(raw)} is not a whole number >= ${min}; using the default ${fallback}.`
+    );
+  }
+  return fallback;
 }
 
 /** Posts per minute one address may make across every key it holds (default 120, so people
@@ -187,7 +202,7 @@ function ipPerMinute() {
  */
 function allowance(limit, bornAt, t) {
   if (bornAt === null || bornAt === undefined || !Number.isFinite(bornAt)) return limit;
-  const burst = envNumber('OPEN_POST_NEW_KEY_BURST', DEFAULT_NEW_KEY_BURST);
+  const burst = envNumber('OPEN_POST_NEW_KEY_BURST', DEFAULT_NEW_KEY_BURST, 1);
   const ramp = rampMs();
   if (burst >= limit || !ramp) return limit;
   const age = Math.max(0, t - bornAt);
@@ -201,6 +216,8 @@ function allowance(limit, bornAt, t) {
  * the rest of its ramp, which is fine: the address ceiling still holds).
  */
 const born = new Map();
+/** Most keys tracked on the ramp at once (a flood of free joins can't grow it past this). */
+const BORN_MAX = 50000;
 
 function rampMs() {
   return envNumber('OPEN_POST_NEW_KEY_RAMP_MS', DEFAULT_NEW_KEY_RAMP_MS);
@@ -209,10 +226,19 @@ function rampMs() {
 /** Record that `key` was minted just now, so its posts start on the new-key ramp. */
 function markNew(key) {
   const t = clock();
-  if (born.size >= PRUNE_AT) {
-    for (const [k, at] of born) if (t - at >= rampMs()) born.delete(k);
+  // A Map iterates in insertion order and every entry is (re)inserted at its birth, so the oldest
+  // births come first: drop expired ones from the front and stop at the first live one. Each entry
+  // is dropped at most once, so a flood of joins costs O(1) each rather than a scan per join.
+  const ramp = rampMs();
+  for (const [k, at] of born) {
+    if (t - at < ramp) break;
+    born.delete(k);
   }
+  born.delete(key);
   born.set(key, t);
+  // Hard bound: past BORN_MAX the oldest entries go first. Those keys then count as established,
+  // at the per-key rate; the address ceiling still holds them.
+  while (born.size > BORN_MAX) born.delete(born.keys().next().value);
 }
 
 /** When `key` was minted, if that was within the ramp; otherwise null (established). */
@@ -230,16 +256,20 @@ function bornAt(key, t) {
 function refill(spec, t) {
   const cap = allowance(spec.limit, spec.bornAt, t);
   let b = buckets.get(spec.key);
+  let created = false;
   if (!b) {
-    if (buckets.size >= PRUNE_AT) prune(t);
+    // A full sweep at most every PRUNE_EVERY_MS, so a flood of new keys can't make every
+    // request scan the whole map.
+    if (buckets.size >= PRUNE_AT && t - lastPruneAt >= PRUNE_EVERY_MS) prune(t);
     b = { tokens: cap, at: t, limit: spec.limit };
     buckets.set(spec.key, b);
+    created = true;
   } else {
     b.tokens = Math.min(cap, b.tokens + ((t - b.at) * cap) / 60000);
     b.at = t;
     b.limit = spec.limit;
   }
-  return { b, cap };
+  return { key: spec.key, b, cap, created };
 }
 
 /**
@@ -254,7 +284,11 @@ function take(specs) {
   for (const { b, cap } of live) {
     if (b.tokens < 1) waitMs = Math.max(waitMs, Math.ceil(((1 - b.tokens) * 60000) / cap));
   }
-  if (waitMs) return waitMs;
+  if (waitMs) {
+    // A refused post leaves nothing behind: a bucket made just now for it is full anyway.
+    for (const { key, created } of live) if (created) buckets.delete(key);
+    return waitMs;
+  }
   for (const { b } of live) b.tokens -= 1;
   return 0;
 }
@@ -292,6 +326,7 @@ function takeHumanPost(ipKey) {
 /** Drops buckets that have refilled completely (a full bucket behaves the same as a new one,
  * except for a key still ramping up, which keeps its bucket until it has). */
 function prune(t) {
+  lastPruneAt = t;
   for (const [k, b] of buckets) {
     if (b.tokens + ((t - b.at) * b.limit) / 60000 >= b.limit) buckets.delete(k);
   }
@@ -300,6 +335,8 @@ function prune(t) {
 function _reset() {
   buckets.clear();
   born.clear();
+  warnedKnobs.clear();
+  lastPruneAt = -Infinity;
   loggedStates.clear();
   warnedHeader = null;
   clock = () => Date.now();
@@ -309,10 +346,16 @@ function _setClock(fn) {
   clock = fn;
 }
 
+/** Map sizes, for tests. */
+function _sizes() {
+  return { buckets: buckets.size, born: born.size };
+}
+
 // Check the configured header at startup, so a typo warns in the boot log before the first post.
 clientIpHeader();
 
 module.exports = {
+  _sizes,
   takePost,
   takeOpenPost,
   takeHumanPost,
