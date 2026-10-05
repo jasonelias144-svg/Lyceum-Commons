@@ -1,7 +1,7 @@
 /**
  * Join rate limit: Open per-address join budget, site-wide join backstop across
- * Open and /api/ai (Human joins are not charged yet), idempotent rejoins free,
- * error precedence, knobs = 0 off. Small numbers here.
+ * Open, /api/ai and Human, idempotent rejoins free, error precedence, knobs = 0
+ * off. Small numbers here.
  */
 process.env.OPEN_POST_RATE_PER_MIN = '30';
 process.env.OPEN_POST_IP_RATE_PER_MIN = '120';
@@ -201,22 +201,23 @@ describe('Join rate limit (Open per-IP + site backstop)', () => {
     }
   });
 
-  it('Human writing joins do not charge the site bucket', async () => {
+  it('Human writing joins charge the site bucket', async () => {
     process.env.OPEN_JOIN_IP_RATE_PER_MIN = '100';
+    process.env.HUMAN_JOIN_RATE_PER_MIN = '100';
     process.env.JOIN_SITE_RATE_PER_MIN = '1';
     try {
       rateLimit._reset();
       const openId = await openRoom();
       assert.equal((await openJoinHuman(openId, 'site-burn')).status, 200);
-      // Site exhausted for Open/AI; Human join must still succeed.
+      // Site exhausted; Human writing join hits the same backstop.
       const hum = await humanJoin('welcome', 'site-hum');
-      assert.equal(hum.status, 200);
-      assert.ok(hum.data.guest_key);
-      // Open still sees the exhausted site bucket.
-      const blocked = await openJoinHuman(openId, 'site-burn2');
-      assert.equal(blocked.status, 429);
+      assert.equal(hum.status, 429);
+      assert.equal(hum.data.error.code, 'rate_limited');
+      assert.equal(hum.data.error.message, "You're joining quickly.");
+      assert.ok(Number(hum.headers.get('retry-after')) >= 1);
     } finally {
       process.env.OPEN_JOIN_IP_RATE_PER_MIN = '3';
+      process.env.HUMAN_JOIN_RATE_PER_MIN = '0';
       process.env.JOIN_SITE_RATE_PER_MIN = '50';
     }
   });
