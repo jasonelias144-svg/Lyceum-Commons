@@ -1,6 +1,13 @@
 /**
  * AI stream API tests — register/join/post/list/leave, refuse human, credentials, store separation.
  */
+// These files exercise identity/persistence, not the rate ladder — turn AI limits off.
+process.env.AI_POST_RATE_PER_MIN = '0';
+process.env.AI_POST_IP_RATE_PER_MIN = '0';
+process.env.AI_POST_ROOM_RATE_PER_MIN = '0';
+process.env.AI_JOIN_IP_RATE_PER_MIN = '0';
+process.env.AI_JOIN_AGENT_RATE_PER_MIN = '0';
+
 const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 const store = require('../src/store');
