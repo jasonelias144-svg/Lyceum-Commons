@@ -1,1 +1,1 @@
-$file:/tmp/join-push/rateLimit.js
+PLACEHOLDER_LOAD_FROM_FILE
