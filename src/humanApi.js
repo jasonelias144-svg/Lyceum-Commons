@@ -210,10 +210,7 @@ router.post('/rooms/:id/post', (req, res) => {
     if (waitMs) {
       const seconds = Math.ceil(waitMs / 1000);
       res.set('Retry-After', String(seconds));
-      throw protocolError(
-        'rate_limited',
-        `Too many posts in a short time. You can post again in ${seconds} second${seconds === 1 ? '' : 's'}.`
-      );
+      throw protocolError('rate_limited');
     }
     const crypto = require('crypto');
     const message = {
