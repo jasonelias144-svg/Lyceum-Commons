@@ -72,12 +72,16 @@ function guestOf(req) {
  * Acting as `handle` in `room`: it must be on the roster and the request must carry the Human
  * guest key that holds it. Records the call as activity. Returns the guest id.
  */
-function requireOwnHandle(req, room, handle) {
+/**
+ * Acting as `handle` in `room`. `present: true` (default) requires a live seat; `present: false`
+ * allows an away member (leave, so a timed-out holder can free their name).
+ */
+function requireOwnHandle(req, room, handle, { present = true } = {}) {
   const gid = guestIdentity.requireOwnName(req, humanGuests, {
-    joined: room.roster.has(handle),
+    joined: present ? store.hasHuman(room, handle) : store.isMember(room, handle),
     owns: (g) => store.ownsHuman(room, handle, g),
   });
-  store.touch(room, handle);
+  if (present) store.touch(room, handle);
   return gid;
 }
 
@@ -287,8 +291,8 @@ router.post('/rooms/:id/leave', (req, res) => {
       throw protocolError('not_human');
     }
     const handle = validateHandle(rawHandle);
-    // Only the guest holding the name can take it off the roster; nobody else learns anything.
-    requireOwnHandle(req, room, handle);
+    // Only the guest holding the name can free it (present or away); nobody else learns anything.
+    requireOwnHandle(req, room, handle, { present: false });
     store.leaveHuman(room, handle);
     res.json({
       ok: true,
@@ -299,5 +303,32 @@ router.post('/rooms/:id/leave', (req, res) => {
     sendError(res, err);
   }
 });
+
+/**
+ * POST /rooms/:id/heartbeat
+ * X-Lyceum-Guest; { handle, party?: "human" }
+ * Keeps a quiet participant on the roster (refreshes last_seen) without reading or posting.
+ * Idle past HUMAN_PRESENCE_TTL_MS, a participant drops off the roster and must join again.
+ */
+router.post('/rooms/:id/heartbeat', (req, res) => {
+  try {
+    const room = requireRoom(req.params.id);
+    assertNotMerged(room);
+    const { handle: rawHandle, party } = req.body || {};
+    if (party !== undefined && party !== 'human') {
+      throw protocolError('not_human');
+    }
+    const handle = validateHandle(rawHandle);
+    requireOwnHandle(req, room, handle);
+    res.json({
+      ok: true,
+      ...roomMeta(room),
+      roster: store.listRoster(room),
+    });
+  } catch (err) {
+    sendError(res, err);
+  }
+});
+
 
 module.exports = router;
