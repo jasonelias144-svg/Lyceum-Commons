@@ -9,10 +9,19 @@
  * Seeded roots and welcome cannot be merge sources; welcome cannot be a merge target.
  * Join/post/list/leave reuse rooms/:id/*.
  * Room format live|board sets post body caps (200 / 4000); fixed at create/seed.
+ *
+ * Humans are guests, as in Open (#41; shared logic in guestIdentity.js, Human data in store.js):
+ * a keyless join returns a guest_key once, and every call made as that name (post, list as
+ * ?handle=, leave, branch, merge) must send it as X-Lyceum-Guest. No key → 401
+ * guest_key_required; someone else's key → 403 not_joined. A held or lookalike name → 409
+ * handle_taken with one generic message. One key holds at most 5 names; 30 idle days release one.
+ * Posts (#46 ladder): charged to the guest key (live 45/min, board 20/min) and to a 120/min
+ * address ceiling; a keyless takeHumanPost call still uses the address-only bucket.
  */
 const express = require('express');
 const store = require('./store');
 const rateLimit = require('./rateLimit');
+const guestIdentity = require('./guestIdentity');
 const { protocolError, sendError } = require('./errors');
 
 const router = express.Router();
@@ -50,6 +59,45 @@ function validateBody(body, { format } = {}) {
     throw protocolError('invalid_body', detail);
   }
   return body;
+}
+
+/** The Human stream's guest registry, seen through the shared guest-key logic. */
+const humanGuests = { resolve: store.resolveGuest };
+
+function guestOf(req) {
+  return guestIdentity.guestOf(req, humanGuests);
+}
+
+/**
+ * Acting as `handle` in `room`: it must be on the roster and the request must carry the Human
+ * guest key that holds it. Records the call as activity. Returns the guest id.
+ */
+function requireOwnHandle(req, room, handle) {
+  const gid = guestIdentity.requireOwnName(req, humanGuests, {
+    joined: room.roster.has(handle),
+    owns: (g) => store.ownsHuman(room, handle, g),
+  });
+  store.touch(room, handle);
+  return gid;
+}
+
+/** Store identity refusals (handle_taken) carry their own generic detail and no status. */
+function sendJoinError(res, err) {
+  if (err.code === 'handle_taken' && !err.status) {
+    return sendError(res, protocolError(err.code, err.detail));
+  }
+  return sendError(res, err);
+}
+
+
+/** One Human post, or a 429 with Retry-After. Charged to the guest key (live/board rate) and to
+ * the address ceiling once a key exists; keyless calls stay on the address-only bucket (#46). */
+function takeHumanPost(req, res, { guestId, format } = {}) {
+  const key = guestId ? `human:guest:${guestId}` : null;
+  const waitMs = rateLimit.takeHumanPost(rateLimit.clientKey(req), key, { format });
+  if (!waitMs) return;
+  res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
+  throw protocolError('rate_limited');
 }
 
 function requireRoom(id) {
@@ -116,11 +164,9 @@ router.post('/rooms/:id/branch', (req, res) => {
     const { handle: rawHandle, party, title } = req.body || {};
     assertHumanParty(party);
     const handle = validateHandle(rawHandle);
-    if (!parent.roster.has(handle)) {
-      throw protocolError('not_joined');
-    }
+    const gid = requireOwnHandle(req, parent, handle);
     const room = store.branchRoom(parent, { title });
-    room.roster.set(handle, { handle, joined_at: new Date().toISOString() });
+    store.seatInBranch(room, handle, gid);
     res.status(201).json({
       ...roomMeta(room),
       created_at: room.created_at,
@@ -143,12 +189,8 @@ router.post('/rooms/:id/merge', (req, res) => {
     const target = requireRoom(targetId.trim());
     assertNotMerged(source);
     store.assertMergeAllowed(source, target);
-    if (!source.roster.has(handle)) {
-      throw protocolError('not_joined');
-    }
-    if (!target.roster.has(handle)) {
-      throw protocolError('not_joined');
-    }
+    requireOwnHandle(req, source, handle);
+    requireOwnHandle(req, target, handle);
     const result = store.mergeRooms(source, target);
     res.json({
       ok: true,
@@ -172,23 +214,17 @@ router.post('/rooms/:id/join', (req, res) => {
     const { handle: rawHandle, party } = req.body || {};
     assertHumanParty(party);
     const handle = validateHandle(rawHandle);
-
-    if (room.roster.has(handle)) {
-      return res.json({
-        ...roomMeta(room),
-        roster: store.listRoster(room),
-      });
-    }
-    if (room.roster.size >= store.MAX_PARTIES) {
-      throw protocolError('room_full');
-    }
-    room.roster.set(handle, { handle, joined_at: new Date().toISOString() });
+    const { guest_key: guestKey } = store.joinHuman(room, handle, guestOf(req));
+    // A key minted here starts on the new-key ramp (#46 ladder, same as Open).
+    if (guestKey) rateLimit.markNew(`human:guest:${store.resolveGuest(guestKey)}`);
     res.json({
       ...roomMeta(room),
+      // Only on the join that minted it; never again.
+      ...(guestKey ? { guest_key: guestKey } : {}),
       roster: store.listRoster(room),
     });
   } catch (err) {
-    sendError(res, err);
+    sendJoinError(res, err);
   }
 });
 
@@ -201,17 +237,9 @@ router.post('/rooms/:id/post', (req, res) => {
       throw protocolError('not_human');
     }
     const handle = validateHandle(rawHandle);
-    if (!room.roster.has(handle)) {
-      throw protocolError('not_joined');
-    }
+    const gid = requireOwnHandle(req, room, handle);
     const body = validateBody(rawBody, { format: room.format });
-    // No guest keys on the Human stream yet, so posts are limited by address for now.
-    const waitMs = rateLimit.takeHumanPost(rateLimit.clientKey(req));
-    if (waitMs) {
-      const seconds = Math.ceil(waitMs / 1000);
-      res.set('Retry-After', String(seconds));
-      throw protocolError('rate_limited');
-    }
+    takeHumanPost(req, res, { guestId: gid, format: room.format });
     const crypto = require('crypto');
     const message = {
       id: `msg_${crypto.randomBytes(6).toString('hex')}`,
@@ -233,9 +261,7 @@ router.get('/rooms/:id/messages', (req, res) => {
     const room = requireRoom(req.params.id);
     const handle = req.query.handle;
     if (handle !== undefined) {
-      if (!room.roster.has(String(handle))) {
-        throw protocolError('not_joined');
-      }
+      requireOwnHandle(req, room, String(handle).trim());
     }
     let messages = room.messages;
     const after = req.query.after;
@@ -261,7 +287,9 @@ router.post('/rooms/:id/leave', (req, res) => {
       throw protocolError('not_human');
     }
     const handle = validateHandle(rawHandle);
-    room.roster.delete(handle);
+    // Only the guest holding the name can take it off the roster; nobody else learns anything.
+    requireOwnHandle(req, room, handle);
+    store.leaveHuman(room, handle);
     res.json({
       ok: true,
       ...roomMeta(room),
