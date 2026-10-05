@@ -5,7 +5,8 @@
  * X-Lyceum-Guest on every call, and never shown on the page. A reload re-seats you under the
  * same name with that key. Idle seats expire on the server (presence TTL); this page does not
  * leave on tab close. Leave clears the stored seat. If a poll or post gets not_joined (seat
- * expired, or another tab left), we rejoin once with the stored key and retry once.
+ * expired), we rejoin once as this tab's room/name with the stored key and retry once.
+ * Leave in any tab clears the shared seat; other tabs then show the join form.
  */
 (function () {
   const WELCOME = 'welcome';
@@ -174,21 +175,28 @@
   }
 
   /**
-   * Rejoin the stored room with the stored key. Does not clear the seat on failure.
-   * Returns true when the join succeeded.
+   * Rejoin this tab's room under this tab's name, using the stored guest key.
+   * Prefers in-memory state.roomId / state.handle so another tab's seat in
+   * localStorage cannot switch this tab's room or name (W-4). Falls back to the
+   * stored seat only when this tab has none (start-up). If Leave cleared the
+   * shared roomId, refuse — Leave means leave in this browser (R47).
    */
   async function silentRejoin() {
     const seat = loadSeat();
-    if (!seat || !seat.handle || !seat.roomId) return false;
+    // Explicit Leave in any tab clears roomId; do not rejoin from stale in-memory state.
+    if (seat && seat.roomId === '') return false;
+    const roomId = state.roomId || (seat && seat.roomId) || '';
+    const handle = state.handle || (seat && seat.handle) || '';
+    if (!roomId || !handle) return false;
     if (!guestKey()) return false;
     try {
-      await api(`/rooms/${encodeURIComponent(seat.roomId)}/join`, {
+      await api(`/rooms/${encodeURIComponent(roomId)}/join`, {
         method: 'POST',
-        body: JSON.stringify({ handle: seat.handle, party: 'human' }),
+        body: JSON.stringify({ handle, party: 'human' }),
       });
-      state.roomId = seat.roomId;
-      state.handle = seat.handle;
-      saveSeat(seat.handle, seat.roomId);
+      // Keep this tab on its own room/name; never adopt another tab's stored seat.
+      state.roomId = roomId;
+      state.handle = handle;
       return true;
     } catch (_) {
       return false;
@@ -203,7 +211,7 @@
       if (!seatGone(e)) throw e;
       if (!(await silentRejoin())) {
         const seat = loadSeat();
-        if (seat && seat.handle) handleInput.value = seat.handle;
+        handleInput.value = state.handle || (seat && seat.handle) || '';
         resetRoom();
         throw e;
       }
