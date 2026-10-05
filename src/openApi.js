@@ -16,6 +16,7 @@ const notify = require('./notify');
 const persist = require('./persist');
 const rateLimit = require('./rateLimit');
 const { protocolError, sendError } = require('./errors');
+const guestIdentity = require('./guestIdentity');
 
 const router = express.Router();
 
@@ -150,15 +151,16 @@ function requireAiCredential(req, roomId) {
   return { room, agent_id: binding.agent_id, binding, token };
 }
 
+/** Open's own guest registry, seen through the shared guest-key logic (guestIdentity.js). */
+const openGuests = { resolve: openStore.resolveGuest };
+
 /** The guest id behind this request's X-Lyceum-Guest header, or null. */
 function guestOf(req) {
-  return openStore.resolveGuest(req.headers['x-lyceum-guest']);
+  return guestIdentity.guestOf(req, openGuests);
 }
 
 function requireGuest(req) {
-  const gid = guestOf(req);
-  if (!gid) throw protocolError('guest_key_required');
-  return gid;
+  return guestIdentity.requireGuest(req, openGuests);
 }
 
 /**
@@ -167,11 +169,10 @@ function requireGuest(req) {
  * not_joined, as before; no key is guest_key_required; someone else's key is not_joined.
  */
 function requireOwnHandle(req, room, handle, { present = true } = {}) {
-  const joined = present ? openStore.hasHuman(room, handle) : openStore.isMember(room, 'human', handle);
-  if (!joined) throw protocolError('not_joined');
-  const gid = requireGuest(req);
-  if (!openStore.ownsHuman(room, handle, gid)) throw protocolError('not_joined');
-  return gid;
+  return guestIdentity.requireOwnName(req, openGuests, {
+    joined: present ? openStore.hasHuman(room, handle) : openStore.isMember(room, 'human', handle),
+    owns: (gid) => openStore.ownsHuman(room, handle, gid),
+  });
 }
 
 /**

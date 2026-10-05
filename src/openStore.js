@@ -16,10 +16,25 @@
  */
 const crypto = require('crypto');
 const { protocolError } = require('./errors');
+const guestIdentity = require('./guestIdentity');
+
+const {
+  MAX_NAMES_PER_GUEST,
+  DEFAULT_GUEST_RELEASE_MS,
+  guestReleaseMs,
+  releaseDue,
+  nameKey,
+  sameId,
+  MAX_NAME_KEY,
+  nameAllowed,
+  identityError,
+  nameTakenError,
+  assertNotHeldByOther,
+  assertClaimable,
+  assertUnderNameCap,
+} = guestIdentity;
 
 const MAX_PARTIES = 16;
-/** Distinct human names one guest key may hold across all rooms (the /guests page states it). */
-const MAX_NAMES_PER_GUEST = 5;
 const OPEN_WELCOME_ROOM_ID = 'open-welcome';
 const OPEN_WELCOME_TITLE = 'Open welcome lobby';
 const DEFAULT_PRESENCE_TTL_MS = 10 * 60 * 1000;
@@ -99,51 +114,16 @@ const credentials = new Map();
 const lastRooms = new Map();
 
 /**
- * Guest keys. A human join without a key gets a fresh random key, returned once in the join
- * response and never again. The client sends it as X-Lyceum-Guest; only its sha256 is kept,
- * mapped to a guest record. `type` leaves room for other kinds of record later, and
- * `account_id` is where a member account will attach. `gid` is internal and not secret.
+ * Guest keys (logic in guestIdentity.js, shared with the Human stream; this registry is Open's
+ * own). A human join without a key gets a fresh random key, returned once in the join response
+ * and never again. The client sends it as X-Lyceum-Guest; only its sha256 is kept.
  */
-const guests = new Map();
-const GUEST_KEY_RE = /^g_[A-Za-z0-9_-]{43}$/;
-const DEFAULT_GUEST_RELEASE_MS = 30 * 24 * 60 * 60 * 1000;
-const MIN_GUEST_RELEASE_MS = 60 * 1000;
-const releaseCache = { raw: undefined, value: DEFAULT_GUEST_RELEASE_MS };
-
-/**
- * How long a human name may go unused before it is released: OPEN_GUEST_RELEASE_MS, default
- * 30 days (the /guests promise). Shorter values are for testing; whole numbers of at least
- * 60000 only, anything else falls back to the default with a warning.
- */
-function guestReleaseMs() {
-  const raw = process.env.OPEN_GUEST_RELEASE_MS;
-  if (raw === releaseCache.raw) return releaseCache.value;
-  let value = DEFAULT_GUEST_RELEASE_MS;
-  if (raw !== undefined && raw !== '') {
-    if (/^\d+$/.test(raw) && Number(raw) >= MIN_GUEST_RELEASE_MS) value = Number(raw);
-    else console.warn(`OPEN_GUEST_RELEASE_MS="${raw}" is not a whole number of at least ${MIN_GUEST_RELEASE_MS}; using ${DEFAULT_GUEST_RELEASE_MS}.`);
-  }
-  releaseCache.raw = raw;
-  releaseCache.value = value;
-  return value;
-}
-
-function hashGuestKey(key) {
-  return crypto.createHash('sha256').update(key).digest('hex');
-}
-
-function mintGuest() {
-  const key = `g_${crypto.randomBytes(32).toString('base64url')}`;
-  const record = { gid: newId('gst'), type: 'guest', created_at: nowIso(), account_id: null };
-  guests.set(hashGuestKey(key), record);
-  return { key, gid: record.gid };
-}
+const guestRegistry = guestIdentity.createGuestRegistry({ newId, nowIso });
+const mintGuest = guestRegistry.mint;
 
 /** The guest id for a key, or null for a missing, malformed or unknown key. */
 function resolveGuest(key) {
-  if (typeof key !== 'string' || !GUEST_KEY_RE.test(key)) return null;
-  const record = guests.get(hashGuestKey(key));
-  return record ? record.gid : null;
+  return guestRegistry.resolve(key);
 }
 
 /**
@@ -344,55 +324,8 @@ function turnOf(room) {
   return turn;
 }
 
-/**
- * Letters from other scripts that render like Latin ones, folded so that `jаson` (Cyrillic а)
- * or `nоva` (Cyrillic о) compares as `jason` / `nova`. Deliberately small: the common
- * Cyrillic and Greek lookalikes plus dotless i/j, not the full Unicode confusables table.
- */
-const LOOKALIKES = {
-  а: 'a', в: 'b', е: 'e', к: 'k', м: 'm', н: 'h', о: 'o', р: 'p', с: 'c', т: 't', у: 'y', х: 'x',
-  і: 'i', ј: 'j', ѕ: 's', ԁ: 'd', ӏ: 'l', ԛ: 'q', ԝ: 'w', һ: 'h', ё: 'e', ї: 'i',
-  α: 'a', β: 'b', ε: 'e', ι: 'i', κ: 'k', ν: 'v', ο: 'o', ρ: 'p', τ: 't', υ: 'u', χ: 'x',
-  ı: 'i', ȷ: 'j',
-};
-/** Capitals are folded before lowercasing, because Greek `Ν` looks like `N` but lowercases to `ν`. */
-const LOOKALIKE_CAPITALS = {
-  А: 'a', В: 'b', Е: 'e', К: 'k', М: 'm', Н: 'h', О: 'o', Р: 'p', С: 'c', Т: 't', Х: 'x', У: 'y',
-  І: 'i', Ј: 'j', Ѕ: 's', Ӏ: 'l', Ԛ: 'q', Ԝ: 'w',
-  Α: 'a', Β: 'b', Ε: 'e', Ζ: 'z', Η: 'h', Ι: 'i', Κ: 'k', Μ: 'm', Ν: 'n', Ο: 'o', Ρ: 'p', Τ: 't',
-  Υ: 'y', Χ: 'x',
-};
+/* nameKey / sameId (lookalike folding) live in guestIdentity.js, shared with the Human stream. */
 
-/**
- * The comparison form of a participant name: compatibility-normalized (fullwidth `ｊａｓｏｎ`
- * is `jason`), invisible characters (zero-width, bidi controls, Hangul fillers, variation
- * selectors, the blank braille cell, control characters) removed, whitespace collapsed,
- * lowercased, Latin accents and dots removed (`İLK` is `ilk`), and common lookalike letters
- * folded. Only for comparing; the display name is never changed. A name that is empty once
- * blanks are removed is refused.
- */
-const BLANK_RE = /[\p{Cc}\p{Cf}\p{Default_Ignorable_Code_Point}\u2800\u{16FE4}\u{1D159}]/gu;
-
-function nameKey(id) {
-  return String(id)
-    .normalize('NFKC')
-    .replace(BLANK_RE, '')
-    .replace(/\s+/gu, ' ')
-    .trim()
-    .replace(/./gu, (c) => LOOKALIKE_CAPITALS[c] || c)
-    .toLowerCase()
-    .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
-    .replace(/./gu, (c) => LOOKALIKES[c] || c)
-    .normalize('NFC');
-}
-
-function sameId(a, b) {
-  return nameKey(a) === nameKey(b);
-}
-
-/** Longest comparison form (`nameKey`) a new name may have, in code points. AI ids are at most 64. */
-const MAX_NAME_KEY = 64;
 /** Longest name a mention can spell, in code points (handles are 40 units, AI ids 64). */
 const MENTION_SPAN = 64;
 /** Only the first this-many @s in a message are read as mentions (bounds the work per post). */
@@ -952,7 +885,7 @@ function releaseIdle(room) {
   const released = [];
   for (const [key, rec] of Object.entries(members)) {
     if (!key.startsWith('human:') || !rec || typeof rec !== 'object' || room.roster.has(key)) continue;
-    if (t - (Date.parse(rec.last_active) || 0) <= guestReleaseMs()) continue;
+    if (!releaseDue(rec.last_active, t)) continue;
     delete members[key];
     if (room.seen) delete room.seen[key];
     released.push({ room_id: room.id, owner: rec.owner || null, handle: key.slice('human:'.length) });
@@ -965,6 +898,16 @@ function releaseIdle(room) {
 }
 
 /** Lazy housekeeping on every read or change: expire idle parties, release idle names, prune the turn. */
+function heldGuestIds() {
+  const held = new Set();
+  for (const room of openRooms.values()) {
+    for (const [key, rec] of Object.entries(membersOf(room))) {
+      if (key.startsWith('human:') && rec && rec.owner) held.add(rec.owner);
+    }
+  }
+  return held;
+}
+
 function sweep(room) {
   const expired = expireIdle(room);
   releaseIdle(room);
@@ -972,11 +915,9 @@ function sweep(room) {
   return expired;
 }
 
-function identityError(code, detail) {
-  const err = new Error(detail || code);
-  err.code = code;
-  if (detail) err.detail = detail;
-  return err;
+/** Drop guest records that hold no names. Called from snapshot serialize (not on leave). */
+function pruneGuestRecords() {
+  return guestRegistry.pruneEmpty(heldGuestIds());
 }
 
 /**
@@ -1017,7 +958,7 @@ function assertIdFree(room, party, id) {
     if (nameKey(otherId) !== wanted) continue;
     if (otherParty === party) {
       if (kept) continue;
-      throw identityError('handle_taken', 'That name, or one that looks the same, is already taken in this room.');
+      throw nameTakenError();
     }
     if (otherId === id) {
       if (!room.roster.has(k)) throw identityError('invalid_party', 'That name is held in this room by a human.');
@@ -1025,20 +966,6 @@ function assertIdFree(room, party, id) {
     }
     throw identityError('handle_taken', 'That name, or one that looks the same, is in use in this room right now.');
   }
-}
-
-/**
- * Zero-width spaces, bidi controls, control characters and other invisible marks make a handle
- * look like another one (or display reversed). Joiners (U+200C, U+200D) stay allowed: scripts
- * and emoji need them. AI ids are ASCII-only already.
- */
-const INVISIBLE_RE = /[\p{Cc}\u061c\u180e\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]/u;
-
-/** A new human name: nothing invisible, not blank, and a comparison form of at most MAX_NAME_KEY. */
-function nameAllowed(handle) {
-  if (INVISIBLE_RE.test(handle)) return false;
-  const k = nameKey(handle);
-  return Boolean(k) && Array.from(k).length <= MAX_NAME_KEY;
 }
 
 function sameSecret(a, b) {
@@ -1074,20 +1001,15 @@ function joinHuman(room, handle, gid = null) {
   }
   const members = membersOf(room);
   const rec = members[key] && typeof members[key] === 'object' ? members[key] : null;
-  if (rec && rec.owner && rec.owner !== gid) {
-    throw identityError('handle_taken', 'That name, or one that looks the same, is already taken in this room.');
-  }
+  assertNotHeldByOther(rec, gid);
   assertIdFree(room, 'human', handle);
   const present = room.roster.has(key);
-  const claim = Boolean(rec) && !rec.owner;
-  if (claim && present) {
-    // Same words as a held name, so a refusal doesn't say which names are claimable or when.
-    throw identityError('handle_taken', 'That name, or one that looks the same, is already taken in this room.');
-  }
+  const claim = assertClaimable(rec, present);
   if (!present) assertCapacity(room);
-  if (gid && !(rec && rec.owner === gid) && !guestHolds(gid, handle) && namesHeldBy(gid).size >= MAX_NAMES_PER_GUEST) {
-    throw protocolError('guest_name_limit');
-  }
+  assertUnderNameCap(gid, rec, {
+    holdsName: () => guestHolds(gid, handle),
+    heldCount: () => namesHeldBy(gid).size,
+  });
   let guestKey = null;
   if (!gid) ({ key: guestKey, gid } = mintGuest());
   const at = nowIso();
@@ -1237,7 +1159,7 @@ function clearAll() {
   indexing = null;
   openRooms.clear();
   credentials.clear();
-  guests.clear();
+  guestRegistry.clear();
   presenceEpoch = now();
   ensureWelcomeLobby();
 }
@@ -1297,6 +1219,7 @@ module.exports = {
   authenticate,
   touch,
   sweep,
+  pruneGuestRecords,
   hasHuman,
   hasAi,
   leaveHuman,
@@ -1312,5 +1235,5 @@ module.exports = {
   },
   _openRooms: openRooms,
   _credentials: credentials,
-  _guests: guests,
+  _guests: guestRegistry.guests,
 };

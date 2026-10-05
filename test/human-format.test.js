@@ -3,6 +3,7 @@
  */
 const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
+const { guestHeaders, remember } = require('./guest-jar');
 const store = require('../src/store');
 
 let app;
@@ -28,13 +29,15 @@ beforeEach(() => {
   store.clearAll();
 });
 
+/** One browser per handle: the guest key a join returns is sent on later calls as that handle. */
 async function json(method, path, body) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...guestHeaders(path, body) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => null);
+  remember(path, body, data);
   return { status: res.status, data };
 }
 
@@ -181,5 +184,32 @@ describe('Room format live|board', () => {
     const js = await (await fetch(`${base}/js/human.js`)).text();
     assert.match(js, /applyFormatFace/);
     assert.match(js, /LyceumHumanFormat/);
+  });
+
+  it('/human client: no pagehide leave; silent rejoin once on not_joined; only Leave clears seat', async () => {
+    const js = await (await fetch(`${base}/js/human.js`)).text();
+    // W-1 / CoS: do not leave on unload (idle TTL covers capacity).
+    assert.equal(/pagehide/.test(js), false);
+    assert.equal(/keepalive/.test(js), false);
+    // W-1/W-2/W-3: rejoin once + retry once on seat-gone.
+    assert.match(js, /function silentRejoin\s*\(/);
+    assert.match(js, /function withSeat\s*\(/);
+    assert.match(js, /not_joined/);
+    assert.match(js, /withSeat/);
+    // Seat storage cleared only by Leave (saveSeat(…, '') next to leave), not on failed rejoin.
+    assert.match(js, /btn-leave[\s\S]*saveSeat\(state\.handle, ''\)/);
+    assert.equal(/join\(seat\.roomId[\s\S]*saveSeat\(seat\.handle, ''\)/.test(js), false);
+  });
+
+  it('/human client W-4: silentRejoin prefers this tab state.roomId/handle over shared seat LS', async () => {
+    const js = await (await fetch(`${base}/js/human.js`)).text();
+    // Must prefer in-memory state so another tab's stored seat cannot switch room/name.
+    assert.match(js, /state\.roomId\s*\|\|\s*\(seat\s*&&\s*seat\.roomId\)/);
+    assert.match(js, /state\.handle\s*\|\|\s*\(seat\s*&&\s*seat\.handle\)/);
+    // Leave cleared shared roomId → refuse rejoin (other tabs drop to the form).
+    assert.match(js, /seat\.roomId\s*===\s*['"]{2}/);
+    // Must not assign state from loadSeat alone (the W-4 bug).
+    assert.equal(/state\.roomId\s*=\s*seat\.roomId/.test(js), false);
+    assert.equal(/state\.handle\s*=\s*seat\.handle/.test(js), false);
   });
 });

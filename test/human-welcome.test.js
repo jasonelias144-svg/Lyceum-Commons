@@ -3,6 +3,7 @@
  */
 const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
+const { guestHeaders, remember } = require('./guest-jar');
 const store = require('../src/store');
 
 let app;
@@ -28,13 +29,15 @@ beforeEach(() => {
   store.clearAll();
 });
 
+/** One browser per handle: the guest key a join returns is sent on later calls as that handle. */
 async function json(method, path, body) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...guestHeaders(path, body) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => null);
+  remember(path, body, data);
   return { status: res.status, data };
 }
 

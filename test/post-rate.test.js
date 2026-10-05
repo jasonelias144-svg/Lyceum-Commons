@@ -1,17 +1,21 @@
 /**
  * Post rate limit (R12-1b, soft-first ladder): each key (guest or AI credential) gets
  * OPEN_POST_RATE_PER_MIN posts a minute, every key from one address shares
- * OPEN_POST_IP_RATE_PER_MIN, new keys ramp up, and /api/human is limited by address.
+ * OPEN_POST_IP_RATE_PER_MIN, new keys ramp up, and /api/human is limited per guest key under an address ceiling.
  * Small numbers here; the burst (default 5) is above the per-key 3, so the ramp only shows in the
  * tests that set it.
  */
 process.env.OPEN_POST_RATE_PER_MIN = '3';
 process.env.OPEN_POST_IP_RATE_PER_MIN = '5';
 process.env.HUMAN_POST_RATE_PER_MIN = '2';
+process.env.HUMAN_LIVE_POST_RATE_PER_MIN = '2';
+process.env.HUMAN_BOARD_POST_RATE_PER_MIN = '2';
+process.env.HUMAN_POST_IP_RATE_PER_MIN = '5';
 const { describe, it, before, after, beforeEach } = require('node:test');
 const { guestHeaders, remember } = require('./guest-jar');
 const assert = require('node:assert/strict');
 const openStore = require('../src/openStore');
+const store = require('../src/store');
 const rateLimit = require('../src/rateLimit');
 
 let server;
@@ -33,6 +37,7 @@ after(async () => {
 
 beforeEach(() => {
   openStore.clearAll();
+  store.clearAll();
   rateLimit._reset();
 });
 
@@ -186,22 +191,146 @@ describe('Post rate limit (R12-1b)', () => {
     });
   });
 
-  it('/api/human is limited by address until it has guest keys', async () => {
-    const room = (await json('POST', '/api/human/rooms', {})).data.room_id;
+  it('/api/human posts are limited per guest key (live/board rate)', async () => {
+    const room = (await json('POST', '/api/human/rooms', {})).data.room_id; // board
     await json('POST', `/api/human/rooms/${room}/join`, { handle: 'h1', party: 'human' });
     await json('POST', `/api/human/rooms/${room}/join`, { handle: 'h2', party: 'human' });
-    const post = (handle, body, headers) => json('POST', `/api/human/rooms/${room}/post`, { handle, body, party: 'human' }, headers);
+    const post = (handle, body) =>
+      json('POST', `/api/human/rooms/${room}/post`, { handle, body, party: 'human' });
     assert.equal((await post('h1', 'one')).status, 201);
-    assert.equal((await post('h2', 'two')).status, 201);
+    assert.equal((await post('h1', 'two')).status, 201);
     const res = await post('h1', 'three');
-    assert.equal(res.status, 429, 'a third post from the address, under any name');
+    assert.equal(res.status, 429, 'a third post under the same key');
     assert.equal(res.data.error.code, 'rate_limited');
     assert.ok(Number(res.headers.get('retry-after')) >= 1);
+    // A different key from the same address still has its own allowance (until the IP ceiling).
+    assert.equal((await post('h2', 'other-one')).status, 201);
+    assert.equal((await post('h2', 'other-two')).status, 201);
+    process.env.HUMAN_BOARD_POST_RATE_PER_MIN = '0';
+    process.env.HUMAN_POST_IP_RATE_PER_MIN = '0';
+    try {
+      assert.equal((await post('h1', 'four')).status, 201, 'board+IP knobs at 0 turn the keyed limit off');
+    } finally {
+      process.env.HUMAN_BOARD_POST_RATE_PER_MIN = '2';
+      process.env.HUMAN_POST_IP_RATE_PER_MIN = '5';
+    }
+  });
+
+  it('/api/human live posts use HUMAN_LIVE_POST_RATE_PER_MIN (default 45)', async () => {
+    assert.equal(rateLimit.DEFAULT_HUMAN_LIVE_PER_MIN, 45);
+    process.env.HUMAN_LIVE_POST_RATE_PER_MIN = '2';
+    await json('POST', '/api/human/rooms/welcome/join', { handle: 'live1', party: 'human' });
+    const post = (body) =>
+      json('POST', '/api/human/rooms/welcome/post', { handle: 'live1', body, party: 'human' });
+    assert.equal((await post('one')).status, 201);
+    assert.equal((await post('two')).status, 201);
+    assert.equal((await post('three')).status, 429);
+  });
+
+  it('takeHumanPost without a key still falls back to the address-only bucket', () => {
+    rateLimit._reset();
+    const ip = 'ip:203.0.113.9';
+    assert.equal(rateLimit.takeHumanPost(ip), 0);
+    assert.equal(rateLimit.takeHumanPost(ip), 0);
+    assert.ok(rateLimit.takeHumanPost(ip) > 0, 'third address-only post waits');
+    // A keyed call from another address does not spend the address-only bucket above.
+    assert.equal(rateLimit.takeHumanPost('ip:203.0.113.10', 'human:guest:gst_a', { format: 'board' }), 0);
     process.env.HUMAN_POST_RATE_PER_MIN = '0';
     try {
-      assert.equal((await post('h1', 'four')).status, 201, 'HUMAN_POST_RATE_PER_MIN=0 turns it off');
+      rateLimit._reset();
+      assert.equal(rateLimit.takeHumanPost(ip), 0, 'HUMAN_POST_RATE_PER_MIN=0 turns address-only off');
+      assert.equal(rateLimit.takeHumanPost(ip), 0);
     } finally {
       process.env.HUMAN_POST_RATE_PER_MIN = '2';
+    }
+  });
+
+  it('board and live allowances do not leak through a shared per-key bucket (B-1)', async () => {
+    process.env.HUMAN_LIVE_POST_RATE_PER_MIN = '45';
+    process.env.HUMAN_BOARD_POST_RATE_PER_MIN = '20';
+    process.env.HUMAN_POST_IP_RATE_PER_MIN = '200';
+    // Burst above board so a freshly minted key is not stuck on the new-key ramp for this check.
+    process.env.OPEN_POST_NEW_KEY_BURST = '45';
+    try {
+      const board = (await json('POST', '/api/human/rooms', {})).data.room_id;
+      await json('POST', `/api/human/rooms/${board}/join`, { handle: 'alt', party: 'human' });
+      await json('POST', '/api/human/rooms/welcome/join', { handle: 'alt', party: 'human' });
+      // Spend the whole board allowance.
+      for (let i = 0; i < 20; i++) {
+        assert.equal(
+          (await json('POST', `/api/human/rooms/${board}/post`, { handle: 'alt', body: `b${i}`, party: 'human' })).status,
+          201,
+          `board post ${i}`
+        );
+      }
+      assert.equal(
+        (await json('POST', `/api/human/rooms/${board}/post`, { handle: 'alt', body: 'b21', party: 'human' })).status,
+        429,
+        "board's 21st post in a minute"
+      );
+      // Live still has its own 45.
+      assert.equal(
+        (await json('POST', '/api/human/rooms/welcome/post', { handle: 'alt', body: 'live-ok', party: 'human' })).status,
+        201,
+        'live allowance is independent of board'
+      );
+    } finally {
+      process.env.HUMAN_LIVE_POST_RATE_PER_MIN = '2';
+      process.env.HUMAN_BOARD_POST_RATE_PER_MIN = '2';
+      process.env.HUMAN_POST_IP_RATE_PER_MIN = '5';
+      process.env.OPEN_POST_NEW_KEY_BURST = '5';
+    }
+  });
+
+  it('HUMAN_LIVE_POST_RATE_PER_MIN defaults to 45 and ignores HUMAN_POST_RATE_PER_MIN', () => {
+    rateLimit._reset();
+    delete process.env.HUMAN_LIVE_POST_RATE_PER_MIN;
+    process.env.HUMAN_POST_RATE_PER_MIN = '30';
+    process.env.HUMAN_POST_IP_RATE_PER_MIN = '200';
+    try {
+      // Direct unit check: live keyed posts use 45, not the address knob 30.
+      const ip = 'ip:198.51.100.9';
+      const key = 'human:guest:gst_live_default';
+      let n = 0;
+      while (n < 50 && rateLimit.takeHumanPost(ip, key, { format: 'live' }) === 0) n += 1;
+      assert.equal(n, 45);
+      assert.ok(rateLimit.takeHumanPost(ip, key, { format: 'live' }) > 0);
+    } finally {
+      process.env.HUMAN_POST_RATE_PER_MIN = '2';
+      process.env.HUMAN_LIVE_POST_RATE_PER_MIN = '2';
+      process.env.HUMAN_POST_IP_RATE_PER_MIN = '5';
+    }
+  });
+
+  it('many Human keys from one address share HUMAN_POST_IP_RATE_PER_MIN', async () => {
+    process.env.HUMAN_BOARD_POST_RATE_PER_MIN = '10';
+    process.env.HUMAN_POST_IP_RATE_PER_MIN = '3';
+    try {
+      const room = (await json('POST', '/api/human/rooms', {})).data.room_id;
+      for (const h of ['a', 'b', 'c']) {
+        await json('POST', `/api/human/rooms/${room}/join`, { handle: h, party: 'human' });
+      }
+      assert.equal(
+        (await json('POST', `/api/human/rooms/${room}/post`, { handle: 'a', body: '1', party: 'human' })).status,
+        201
+      );
+      assert.equal(
+        (await json('POST', `/api/human/rooms/${room}/post`, { handle: 'b', body: '2', party: 'human' })).status,
+        201
+      );
+      assert.equal(
+        (await json('POST', `/api/human/rooms/${room}/post`, { handle: 'c', body: '3', party: 'human' })).status,
+        201
+      );
+      const res = await json('POST', `/api/human/rooms/${room}/post`, {
+        handle: 'a',
+        body: '4',
+        party: 'human',
+      });
+      assert.equal(res.status, 429, 'fourth post from the address, under any key');
+    } finally {
+      process.env.HUMAN_BOARD_POST_RATE_PER_MIN = '2';
+      process.env.HUMAN_POST_IP_RATE_PER_MIN = '5';
     }
   });
 

@@ -1,5 +1,5 @@
 /**
- * Snapshot persistence — keeps Human rooms and guest book, and Open rooms, rosters, guest-key hashes,
+ * Snapshot persistence — keeps Human rooms, Human guest-key hashes and guest book, and Open rooms, rosters, guest-key hashes,
  * credentials and webhooks across restarts by writing them to one JSON file.
  * The AI stream is NOT in this file: it has its own store (src/aiStore.js, AI_STORE_PATH).
  * `readLegacyAi()` only reads the AI section older snapshots carried, so aiStore can
@@ -52,10 +52,18 @@ function mapIn(map, entries) {
 }
 
 function serialize() {
+  // Guest records whose names have all been released (no remaining memberships) are dropped
+  // here so Open and Human share the cleanup without changing leave/rejoin behaviour.
+  store.pruneGuestRecords();
+  openStore.pruneGuestRecords();
   return {
     version: VERSION,
     saved_at: new Date().toISOString(),
-    human: { rooms: roomsOut(store._rooms), guestbook: store._getGuestbook() },
+    human: {
+      rooms: roomsOut(store._rooms),
+      guests: Array.from(store._guests.entries()),
+      guestbook: store._getGuestbook(),
+    },
     open: {
       rooms: roomsOut(openStore._openRooms),
       credentials: Array.from(openStore._credentials.entries()),
@@ -71,6 +79,8 @@ function restore(snap) {
     throw new Error(`Unsupported snapshot version: ${snap && snap.version}`);
   }
   roomsIn(store._rooms, snap.human && snap.human.rooms);
+  // Human guest-key hashes (absent in snapshots from before Human guest keys: nobody holds a name yet).
+  mapIn(store._guests, snap.human && snap.human.guests);
   store._setGuestbook((snap.human && snap.human.guestbook) || []);
   roomsIn(openStore._openRooms, snap.open && snap.open.rooms);
   mapIn(openStore._credentials, snap.open && snap.open.credentials);
