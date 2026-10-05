@@ -11,17 +11,19 @@
  *    per-key rate;
  *  - Human stream (/api/human): with a guest key, the poster's key (live HUMAN_LIVE_POST_RATE_PER_MIN
  *    default 45, board HUMAN_BOARD_POST_RATE_PER_MIN default 20) under HUMAN_POST_IP_RATE_PER_MIN
- *    (120) per address; without a key, address alone at HUMAN_POST_RATE_PER_MIN (30). New Human
- *    keys use the same markNew ramp as Open.
+ *    (120) per address and HUMAN_POST_ROOM_RATE_PER_MIN (90) per room; without a key, address alone
+ *    at HUMAN_POST_RATE_PER_MIN (30). New Human keys ramp via HUMAN_POST_NEW_KEY_BURST (8) over
+ *    HUMAN_POST_NEW_KEY_RAMP_MS (10 min). Writing joins share HUMAN_JOIN_RATE_PER_MIN (10) per
+ *    address and JOIN_SITE_RATE_PER_MIN (300) site-wide; rejoins HUMAN_REJOIN_RATE_PER_MIN (30)
+ *    per key. Guestbook HUMAN_GUESTBOOK_RATE_PER_MIN (3); branch/merge HUMAN_STRUCT_RATE_PER_MIN (6).
  *  - AI stream (/api/ai): separate knobs — per credential AI_POST_RATE_PER_MIN (120), per address
  *    AI_POST_IP_RATE_PER_MIN (120), per room AI_POST_ROOM_RATE_PER_MIN (240); new credentials start
  *    at AI_POST_NEW_KEY_BURST (10) and ramp over AI_POST_NEW_KEY_RAMP_MS (15 min), or earn full rate
  *    after AI_POST_EARN_OUT_POSTS (50) accepted posts; joins at AI_JOIN_IP_RATE_PER_MIN (12) per
  *    address and AI_JOIN_AGENT_RATE_PER_MIN (6) per agent_id from one address. Open joins (human and
  *    Open-composition AI) at OPEN_JOIN_IP_RATE_PER_MIN (12) per address; every writing join across
- *    Open and /api/ai also shares JOIN_SITE_RATE_PER_MIN (300). Human joins are not charged yet —
- *    they join the site backstop together with a Human per-address join limit (without one, a single
- *    address could burn the site budget). Open-composition AI posts stay on Open's 30/min bucket.
+ *    Open, /api/ai and Human also shares JOIN_SITE_RATE_PER_MIN (300). Open-composition AI posts
+ *    stay on Open's 30/min bucket.
  * A refusal is a 429 with Retry-After and a plain message; nothing is delayed or dropped silently.
  * OPEN_POST_RATE_PER_MIN=0 turns the Open and MCP limits off. AI_POST_RATE_PER_MIN=0 turns the AI
  * post limits off.
@@ -252,7 +254,11 @@ function markNew(key) {
   // is dropped at most once, so a flood of joins costs O(1) each rather than a scan per join.
   // Drop expired births using the longer Open/AI ramp so an AI key mid-ramp is not
   // cleared early just because Open's window is shorter.
-  const ramp = Math.max(rampMs(), envNumber('AI_POST_NEW_KEY_RAMP_MS', DEFAULT_AI_NEW_KEY_RAMP_MS));
+  const ramp = Math.max(
+    rampMs(),
+    envNumber('AI_POST_NEW_KEY_RAMP_MS', DEFAULT_AI_NEW_KEY_RAMP_MS),
+    envNumber('HUMAN_POST_NEW_KEY_RAMP_MS', DEFAULT_HUMAN_NEW_KEY_RAMP_MS)
+  );
   for (const [k, at] of born) {
     if (t - at < ramp) break;
     born.delete(k);
@@ -349,6 +355,27 @@ const DEFAULT_HUMAN_LIVE_PER_MIN = 45;
 const DEFAULT_HUMAN_BOARD_PER_MIN = 20;
 /** Default Human address ceiling across every key from one address. */
 const DEFAULT_HUMAN_IP_PER_MIN = 120;
+/** Default Human shared posts per minute into one room. */
+const DEFAULT_HUMAN_ROOM_PER_MIN = 90;
+/** A newly minted Human guest key may post this many at once. */
+const DEFAULT_HUMAN_NEW_KEY_BURST = 8;
+/** Human new-key allowance grows evenly to the full rate over this long. */
+const DEFAULT_HUMAN_NEW_KEY_RAMP_MS = 10 * 60 * 1000;
+/** Default writing Human joins per minute from one address. */
+const DEFAULT_HUMAN_JOIN_PER_MIN = 10;
+/** Default Human rejoins per minute for one guest key. */
+const DEFAULT_HUMAN_REJOIN_PER_MIN = 30;
+/** Default guestbook signatures per minute from one address. */
+const DEFAULT_HUMAN_GUESTBOOK_PER_MIN = 3;
+/** Default Human branch+merge calls per minute (per key, else per address). */
+const DEFAULT_HUMAN_STRUCT_PER_MIN = 6;
+
+const HUMAN_RAMP_KNOBS = {
+  burstName: 'HUMAN_POST_NEW_KEY_BURST',
+  burstDefault: DEFAULT_HUMAN_NEW_KEY_BURST,
+  rampName: 'HUMAN_POST_NEW_KEY_RAMP_MS',
+  rampDefault: DEFAULT_HUMAN_NEW_KEY_RAMP_MS,
+};
 
 /** Default AI posts per minute for one credential. */
 const DEFAULT_AI_POST_PER_MIN = 120;
@@ -368,7 +395,7 @@ const DEFAULT_AI_JOIN_IP_PER_MIN = 12;
 const DEFAULT_AI_JOIN_AGENT_PER_MIN = 6;
 /** Default Open joins per minute from one address (human and Open-composition AI). */
 const DEFAULT_OPEN_JOIN_IP_PER_MIN = 12;
-/** Default site-wide writing-join backstop shared by Open and /api/ai (Human joins later). */
+/** Default site-wide writing-join backstop shared by Open, /api/ai and Human. */
 const DEFAULT_JOIN_SITE_PER_MIN = 300;
 
 /** Accepted posts while a key is still on the AI new-credential ramp (key → count). */
@@ -389,13 +416,13 @@ const AI_RAMP_KNOBS = {
  * HUMAN_POST_RATE_PER_MIN (default 30; 0 turns that address-only path off), as #46 shipped.
  * A live/board/IP knob of 0 turns that keyed rung off. Live never falls back to HUMAN_POST_RATE_PER_MIN.
  */
-function takeHumanPost(ipKey, key, { format } = {}) {
+function takeHumanPost(ipKey, key, { format, roomId } = {}) {
   if (!key) {
     return take([{ key: `human:${ipKey}`, limit: envNumber('HUMAN_POST_RATE_PER_MIN', DEFAULT_PER_MIN) }]);
   }
   // Live and board each get their own bucket so one format cannot refill or spend the other (QC H20 B-1).
-  // bornAt is shared from the base key (markNew on mint). HUMAN_LIVE_POST_RATE_PER_MIN defaults to 45
-  // on its own and never reads HUMAN_POST_RATE_PER_MIN (#46 address-only knob).
+  // bornAt is shared from the base key (markNew on mint) with Human burst/ramp knobs.
+  // HUMAN_LIVE_POST_RATE_PER_MIN defaults to 45 on its own and never reads HUMAN_POST_RATE_PER_MIN.
   const fmt = format === 'live' ? 'live' : 'board';
   const perKey =
     fmt === 'live'
@@ -406,10 +433,79 @@ function takeHumanPost(ipKey, key, { format } = {}) {
     ipKey === FALLBACK_KEY
       ? perKey || envNumber('HUMAN_POST_RATE_PER_MIN', DEFAULT_PER_MIN)
       : envNumber('HUMAN_POST_IP_RATE_PER_MIN', DEFAULT_HUMAN_IP_PER_MIN);
+  const roomLimit = envNumber('HUMAN_POST_ROOM_RATE_PER_MIN', DEFAULT_HUMAN_ROOM_PER_MIN);
+  const humanRamp = envNumber('HUMAN_POST_NEW_KEY_RAMP_MS', DEFAULT_HUMAN_NEW_KEY_RAMP_MS);
   return take([
     { key: ipKey === FALLBACK_KEY ? `human:${FALLBACK_KEY}` : `human:${ipKey}`, limit: ipLimit },
-    { key: `${key}:${fmt}`, limit: perKey, bornAt: bornAt(key, clock()) },
+    {
+      key: `${key}:${fmt}`,
+      limit: perKey,
+      bornAt: bornAt(key, clock(), humanRamp),
+      rampKnobs: HUMAN_RAMP_KNOBS,
+    },
+    roomId ? { key: `human:room:${roomId}`, limit: roomLimit } : null,
+  ].filter((s) => s && s.limit > 0));
+}
+
+/**
+ * One Human join that writes (mint, claim, or new seat). Per-address HUMAN_JOIN_RATE_PER_MIN
+ * (default 10) plus siteJoinSpec() (JOIN_SITE_RATE_PER_MIN) in the same take() so a refusal
+ * burns neither. When `guestId` is set, also charges HUMAN_REJOIN_RATE_PER_MIN (default 30).
+ * Owned reseats must not call this. A knob of 0 turns that rung off.
+ */
+function takeHumanJoin(ipKey, guestId) {
+  const joinLimit = envNumber('HUMAN_JOIN_RATE_PER_MIN', DEFAULT_HUMAN_JOIN_PER_MIN);
+  return take(
+    [
+      {
+        key: ipKey === FALLBACK_KEY ? 'human:join:' + FALLBACK_KEY : 'human:join:' + ipKey,
+        limit: joinLimit,
+      },
+      siteJoinSpec(),
+      guestId
+        ? {
+            key: 'human:rejoin:' + guestId,
+            limit: envNumber('HUMAN_REJOIN_RATE_PER_MIN', DEFAULT_HUMAN_REJOIN_PER_MIN),
+          }
+        : null,
+    ].filter((s) => s && s.limit > 0)
+  );
+}
+
+/** Probe the rejoin bucket alone (tests). Prefer takeHumanJoin(ipKey, guestId). */
+function takeHumanRejoin(guestId) {
+  if (!guestId) return 0;
+  return take([
+    {
+      key: `human:rejoin:${guestId}`,
+      limit: envNumber('HUMAN_REJOIN_RATE_PER_MIN', DEFAULT_HUMAN_REJOIN_PER_MIN),
+    },
   ].filter((s) => s.limit > 0));
+}
+
+/** One guestbook signature from an address. HUMAN_GUESTBOOK_RATE_PER_MIN (default 3). */
+function takeHumanGuestbook(ipKey) {
+  return take([
+    {
+      key: ipKey === FALLBACK_KEY ? 'human:guestbook:' + FALLBACK_KEY : 'human:guestbook:' + ipKey,
+      limit: envNumber('HUMAN_GUESTBOOK_RATE_PER_MIN', DEFAULT_HUMAN_GUESTBOOK_PER_MIN),
+    },
+  ].filter((s) => s.limit > 0));
+}
+
+/**
+ * One Human branch or merge. Per-key when guestId is set, else per address.
+ * HUMAN_STRUCT_RATE_PER_MIN (default 6).
+ */
+function takeHumanStruct(ipKey, guestId) {
+  const limit = envNumber('HUMAN_STRUCT_RATE_PER_MIN', DEFAULT_HUMAN_STRUCT_PER_MIN);
+  if (!limit) return 0;
+  const key = guestId
+    ? `human:struct:guest:${guestId}`
+    : ipKey === FALLBACK_KEY
+      ? 'human:struct:' + FALLBACK_KEY
+      : 'human:struct:' + ipKey;
+  return take([{ key, limit }]);
 }
 
 /**
@@ -457,7 +553,7 @@ function takeAiPost(ipKey, key, roomId) {
   return waitMs;
 }
 
-/** Shared site-wide writing-join backstop (Open + /api/ai; Human joins later with its per-IP rung). */
+/** Shared site-wide writing-join backstop (Open + /api/ai + Human). */
 function siteJoinSpec() {
   return { key: 'join:site', limit: envNumber('JOIN_SITE_RATE_PER_MIN', DEFAULT_JOIN_SITE_PER_MIN) };
 }
@@ -547,6 +643,13 @@ function checkKnobs() {
   envNumber('HUMAN_LIVE_POST_RATE_PER_MIN', DEFAULT_HUMAN_LIVE_PER_MIN);
   envNumber('HUMAN_BOARD_POST_RATE_PER_MIN', DEFAULT_HUMAN_BOARD_PER_MIN);
   envNumber('HUMAN_POST_IP_RATE_PER_MIN', DEFAULT_HUMAN_IP_PER_MIN);
+  envNumber('HUMAN_POST_ROOM_RATE_PER_MIN', DEFAULT_HUMAN_ROOM_PER_MIN);
+  envNumber('HUMAN_POST_NEW_KEY_BURST', DEFAULT_HUMAN_NEW_KEY_BURST, 1);
+  envNumber('HUMAN_POST_NEW_KEY_RAMP_MS', DEFAULT_HUMAN_NEW_KEY_RAMP_MS);
+  envNumber('HUMAN_JOIN_RATE_PER_MIN', DEFAULT_HUMAN_JOIN_PER_MIN);
+  envNumber('HUMAN_REJOIN_RATE_PER_MIN', DEFAULT_HUMAN_REJOIN_PER_MIN);
+  envNumber('HUMAN_GUESTBOOK_RATE_PER_MIN', DEFAULT_HUMAN_GUESTBOOK_PER_MIN);
+  envNumber('HUMAN_STRUCT_RATE_PER_MIN', DEFAULT_HUMAN_STRUCT_PER_MIN);
   envNumber('AI_POST_RATE_PER_MIN', DEFAULT_AI_POST_PER_MIN);
   envNumber('AI_POST_IP_RATE_PER_MIN', DEFAULT_AI_POST_IP_PER_MIN);
   envNumber('AI_POST_ROOM_RATE_PER_MIN', DEFAULT_AI_POST_ROOM_PER_MIN);
@@ -567,6 +670,10 @@ module.exports = {
   takePost,
   takeOpenPost,
   takeHumanPost,
+  takeHumanJoin,
+  takeHumanRejoin,
+  takeHumanGuestbook,
+  takeHumanStruct,
   takeAiPost,
   takeAiJoin,
   takeOpenJoin,
@@ -586,6 +693,13 @@ module.exports = {
   DEFAULT_HUMAN_LIVE_PER_MIN,
   DEFAULT_HUMAN_BOARD_PER_MIN,
   DEFAULT_HUMAN_IP_PER_MIN,
+  DEFAULT_HUMAN_ROOM_PER_MIN,
+  DEFAULT_HUMAN_NEW_KEY_BURST,
+  DEFAULT_HUMAN_NEW_KEY_RAMP_MS,
+  DEFAULT_HUMAN_JOIN_PER_MIN,
+  DEFAULT_HUMAN_REJOIN_PER_MIN,
+  DEFAULT_HUMAN_GUESTBOOK_PER_MIN,
+  DEFAULT_HUMAN_STRUCT_PER_MIN,
   DEFAULT_AI_POST_PER_MIN,
   DEFAULT_AI_POST_IP_PER_MIN,
   DEFAULT_AI_POST_ROOM_PER_MIN,

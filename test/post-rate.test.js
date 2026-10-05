@@ -251,6 +251,7 @@ describe('Post rate limit (R12-1b)', () => {
     process.env.HUMAN_POST_IP_RATE_PER_MIN = '200';
     // Burst above board so a freshly minted key is not stuck on the new-key ramp for this check.
     process.env.OPEN_POST_NEW_KEY_BURST = '45';
+    process.env.HUMAN_POST_NEW_KEY_BURST = '45';
     try {
       const board = (await json('POST', '/api/human/rooms', {})).data.room_id;
       await json('POST', `/api/human/rooms/${board}/join`, { handle: 'alt', party: 'human' });
@@ -279,6 +280,7 @@ describe('Post rate limit (R12-1b)', () => {
       process.env.HUMAN_BOARD_POST_RATE_PER_MIN = '2';
       process.env.HUMAN_POST_IP_RATE_PER_MIN = '5';
       process.env.OPEN_POST_NEW_KEY_BURST = '5';
+      process.env.HUMAN_POST_NEW_KEY_BURST = '8';
     }
   });
 
@@ -507,6 +509,14 @@ describe('Post rate limit (R12-1b)', () => {
       'HUMAN_LIVE_POST_RATE_PER_MIN',
       'HUMAN_BOARD_POST_RATE_PER_MIN',
       'HUMAN_POST_IP_RATE_PER_MIN',
+      'HUMAN_POST_ROOM_RATE_PER_MIN',
+      'HUMAN_POST_NEW_KEY_BURST',
+      'HUMAN_POST_NEW_KEY_RAMP_MS',
+      'HUMAN_JOIN_RATE_PER_MIN',
+      'HUMAN_REJOIN_RATE_PER_MIN',
+      'HUMAN_GUESTBOOK_RATE_PER_MIN',
+      'HUMAN_STRUCT_RATE_PER_MIN',
+      'JOIN_SITE_RATE_PER_MIN',
     ];
     let saved;
     let warn;

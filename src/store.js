@@ -508,13 +508,12 @@ function getRoom(id) {
   return room;
 }
 
+
 /**
- * Join (or re-join) `handle` as Human guest `gid`. Returns { room, created, guest_key }.
- * A held name answers only to its owner. Presence expiry frees a capacity slot but the name
- * stays reserved: the holder rejoins without minting a new key and without a room_full check
- * against their own reserved seat. Capacity counts present seats only.
+ * Shared join pre-checks for prepareJoin and joinHuman (kept in one place so they agree).
+ * Returns { members, rec, present, claim, kind } where kind is 'skip' | 'charge'.
  */
-function joinHuman(room, handle, gid = null) {
+function evaluateJoin(room, handle, gid = null) {
   sweep(room);
   const members = membersOf(room);
   const rec = members[handle] && typeof members[handle] === 'object' ? members[handle] : null;
@@ -532,6 +531,28 @@ function joinHuman(room, handle, gid = null) {
     holdsName: () => guestHolds(gid, handle),
     heldCount: () => namesHeldBy(gid).size,
   });
+  // Mint, claim, or brand-new seat → charge. Owned reseat / present rejoin → free.
+  const kind = !gid || claim || (!present && !rec) ? 'charge' : 'skip';
+  return { members, rec, present, claim, kind };
+}
+
+/**
+ * Whether a Human join would write. Returns 'skip' for an owned reseat / present rejoin
+ * (do not charge). Returns 'charge' for a new guest key mint, a claim, or a brand-new seat.
+ * Throws the same codes joinHuman would so they keep precedence over rate_limited.
+ */
+function prepareJoin(room, handle, gid = null) {
+  return evaluateJoin(room, handle, gid).kind;
+}
+
+/**
+ * Join (or re-join) `handle` as Human guest `gid`. Returns { room, created, guest_key }.
+ * A held name answers only to its owner. Presence expiry frees a capacity slot but the name
+ * stays reserved: the holder rejoins without minting a new key and without a room_full check
+ * against their own reserved seat. Capacity counts present seats only.
+ */
+function joinHuman(room, handle, gid = null) {
+  const { members, rec, present, claim } = evaluateJoin(room, handle, gid);
   let guestKey = null;
   if (!gid) ({ key: guestKey, gid } = guestRegistry.mint());
   const at = nowIso();
@@ -643,6 +664,7 @@ module.exports = {
   sweep,
   resolveGuest,
   joinHuman,
+  prepareJoin,
   seatInBranch,
   ownsHuman,
   hasHuman,
