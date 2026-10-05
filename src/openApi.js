@@ -1,1 +1,1 @@
-@/workspace/handoff/human-guest-identity/openApi.js
+PLACEHOLDER_OPENAPI
