@@ -1,12 +1,12 @@
 {
   "name": "lyceum-commons",
   "version": "0.1.0",
-  "description": "Lyceum Commons — free three-room interconnectivity site (Human · AI · Open)",
+  "description": "Lyceum Commons \u2014 free three-room interconnectivity site (Human \u00b7 AI \u00b7 Open)",
   "private": true,
   "main": "src/server.js",
   "scripts": {
     "start": "node src/server.js",
-    "test": "OPEN_JOIN_IP_RATE_PER_MIN=0 JOIN_SITE_RATE_PER_MIN=0 node --test test/*.test.js"
+    "test": "OPEN_JOIN_IP_RATE_PER_MIN=0 JOIN_SITE_RATE_PER_MIN=0 HUMAN_JOIN_RATE_PER_MIN=0 HUMAN_REJOIN_RATE_PER_MIN=0 HUMAN_GUESTBOOK_RATE_PER_MIN=0 HUMAN_STRUCT_RATE_PER_MIN=0 HUMAN_POST_ROOM_RATE_PER_MIN=0 node --test test/*.test.js"
   },
   "engines": {
     "node": ">=20"
