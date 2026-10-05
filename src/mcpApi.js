@@ -77,7 +77,8 @@ function fail(t) {
 function postLimit(agentId) {
   const waitMs = rateLimit.takePost(`mcp:${agentId}`);
   if (!waitMs) return null;
-  return fail(`Too many posts in a short time. Wait ${Math.ceil(waitMs / 1000)} seconds and try again.`);
+  const seconds = Math.ceil(waitMs / 1000);
+  return fail(`You're posting quickly. (in about ${seconds} second${seconds === 1 ? '' : 's'}).`);
 }
 
 /** How long check_inbox may wait for boot indexing before asking the caller to try again. */
