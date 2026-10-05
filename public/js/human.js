@@ -133,14 +133,14 @@
 
   /** After a 429, count down to when posting works again. The line only informs: the send button
    * stays live and this page never holds a post back itself (the server decides). */
-  function showCountdown(seconds, message) {
+  function showCountdown(seconds, message, doneText) {
     let left = Math.ceil(seconds);
     const lead = message || ERROR_COPY.rate_limited;
     const draw = () => {
       errorEl.innerHTML =
         left > 0
           ? `<strong>${esc(lead)} Try again in ${left} second${left === 1 ? '' : 's'}.</strong> <code>rate_limited</code>`
-          : 'You can post again now.';
+          : doneText || 'You can post again now.';
       errorEl.classList.add('visible');
     };
     clearInterval(countdownTimer);
@@ -193,6 +193,7 @@
     if (!res.ok) {
       const err = new Error((data && data.error && data.error.message) || res.statusText);
       err.code = data && data.error && data.error.code;
+      err.isJoin = /\/join$/.test(path);
       const retry = Number(res.headers.get('Retry-After'));
       if (Number.isFinite(retry) && retry > 0) err.retryAfter = retry;
       throw err;
@@ -415,7 +416,7 @@
       try {
         await fn(ev);
       } catch (e) {
-        if (e.code === 'rate_limited' && e.retryAfter) showCountdown(e.retryAfter, e.message);
+        if (e.code === 'rate_limited' && e.retryAfter) showCountdown(e.retryAfter, e.message, e.isJoin ? 'You can join again now.' : 'You can post again now.');
         else showError(e.code, e.message);
       }
     };
