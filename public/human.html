@@ -36,6 +36,7 @@
           <label for="handle">Handle</label>
           <input id="handle" type="text" maxlength="40" placeholder="Display name (1–40 chars)" autocomplete="nickname" />
         </div>
+        <p class="limit-note">You're joining as a guest. <a href="/guests">What that means.</a></p>
         <div class="row">
           <button type="button" id="btn-welcome">Enter welcome lobby</button>
         </div>
@@ -47,7 +48,7 @@
           <input id="room-id" type="text" placeholder="Join an existing room by id" autocomplete="off" />
           <button type="button" id="btn-join" class="secondary">Join</button>
         </div>
-        <p class="limit-note">v0.1: session handle is a declaration, not proof of humanity. Soft cap 16 people per room. No AI invite control exists here — by design. The welcome lobby stays empty until someone posts.</p>
+        <p class="limit-note">v0.1: a handle is a display name, not proof of humanity. This browser keeps your name in each room you join, and a reload puts you back in your seat. Soft cap 16 people per room. No AI invite control exists here — by design. The welcome lobby stays empty until someone posts.</p>
       </section>
 
       <section id="topic-shelf" class="panel topic-shelf" aria-labelledby="topic-shelf-heading">
