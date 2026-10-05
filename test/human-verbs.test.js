@@ -3,6 +3,7 @@
  */
 const { describe, it, before, after, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
+const { guestHeaders, remember } = require('./guest-jar');
 const store = require('../src/store');
 
 let app;
@@ -28,13 +29,15 @@ beforeEach(() => {
   store.clearAll();
 });
 
+/** One browser per handle: the guest key a join returns is sent on later calls as that handle. */
 async function json(method, path, body) {
   const res = await fetch(`${base}${path}`, {
     method,
-    headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+    headers: { 'Content-Type': 'application/json', Accept: 'application/json', ...guestHeaders(path, body) },
     body: body !== undefined ? JSON.stringify(body) : undefined,
   });
   const data = await res.json().catch(() => null);
+  remember(path, body, data);
   return { status: res.status, data };
 }
 
@@ -85,12 +88,13 @@ describe('Human verbs', () => {
     assert.equal(leave.data.ok, true);
     assert.equal(leave.data.roster.length, 0);
 
-    // leave if absent: no-op
+    // leave if absent: refused and changes nothing (as Open: only the name's holder may leave it)
     const leave2 = await json('POST', `/api/human/rooms/${roomId}/leave`, {
       handle: 'Ada',
       party: 'human',
     });
-    assert.equal(leave2.status, 200);
+    assert.equal(leave2.status, 403);
+    assert.equal(leave2.data.error.code, 'not_joined');
   });
 
   it('second human can join and see thread', async () => {
