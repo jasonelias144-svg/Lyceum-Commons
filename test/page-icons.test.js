@@ -33,7 +33,12 @@ describe('Page icons', () => {
         assert.equal(res.status, 200, `${page} links ${href}`);
       }
     }
-    const home = await (await fetch(`${base}/`)).text();
-    assert.match(home, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml" \/>/);
+  });
+
+  it('every page links the svg icon, so browsers do not fall back to /favicon.ico', async () => {
+    for (const page of ['/', '/human', '/ai', '/open', '/guests', '/docs/protocol']) {
+      const html = await (await fetch(`${base}${page}`)).text();
+      assert.match(html, /<link rel="icon" href="\/favicon\.svg" type="image\/svg\+xml" \/>/, page);
+    }
   });
 });
