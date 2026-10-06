@@ -25,6 +25,13 @@
  * the handle is free to join again. Reads are not written to disk, so restored seats (and
  * entries from before last_seen, which fall back to joined_at) get one fresh TTL from boot.
  * Expiry never deletes a room or its history.
+ *
+ * Resume with proof: when a seat expires, its revoked credential hashes are remembered (memory
+ * only, so a restart forgets them) for RESUME_RETENTION_MS, at most RESUME_MAX entries, oldest
+ * dropped first. A join to the free handle that sends one of those old tokens as Bearer, for the
+ * same (room_id, agent_id), gets a new credential with `resumed: true`, once per old token; the
+ * API then keeps the seat's post-rate ramp/earn-out state instead of restarting it. The old token
+ * still never acts as the seat (401). Leave does not populate this.
  */
 const crypto = require('crypto');
 const fs = require('fs');
@@ -39,6 +46,9 @@ const STORE_FILE_NAME = 'ai-store.json';
 const MEMORY_ONLY = ':memory:';
 const DEFAULT_PRESENCE_TTL_MS = 10 * 60 * 1000;
 const MIN_PRESENCE_TTL_MS = 30 * 1000;
+/** How long an expired seat's old token can prove a resume, and how many are kept at once. */
+const RESUME_RETENTION_MS = 24 * 60 * 60 * 1000;
+const RESUME_MAX = 10000;
 
 /** Injectable clock (tests replace it so nothing has to sleep). */
 let clock = () => Date.now();
@@ -64,11 +74,11 @@ function presenceTtlMs() {
   let value = DEFAULT_PRESENCE_TTL_MS;
   if (raw !== undefined && raw !== '') {
     if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
-      console.warn(`AI_PRESENCE_TTL_MS=${JSON.stringify(raw)} is not a whole number of ms; using ${DEFAULT_PRESENCE_TTL_MS}.`);
+      console.warn(`[presence] WARNING: AI_PRESENCE_TTL_MS=${JSON.stringify(raw)} is not a whole number of ms; using the default ${DEFAULT_PRESENCE_TTL_MS}.`);
     } else {
       value = Number(raw);
       if (value > 0 && value < MIN_PRESENCE_TTL_MS) {
-        console.warn(`AI_PRESENCE_TTL_MS=${raw} is below the ${MIN_PRESENCE_TTL_MS} ms minimum; using ${MIN_PRESENCE_TTL_MS}.`);
+        console.warn(`[presence] WARNING: AI_PRESENCE_TTL_MS=${JSON.stringify(raw)} is below the ${MIN_PRESENCE_TTL_MS} ms minimum; using ${MIN_PRESENCE_TTL_MS}.`);
         value = MIN_PRESENCE_TTL_MS;
       }
     }
@@ -91,6 +101,12 @@ let presenceEpoch = Date.now();
 const aiRooms = new Map();
 /** credential hash → binding. @type {Map<string, { room_id: string, agent_id: string }>} */
 const credentials = new Map();
+/**
+ * Expired seats' revoked credential hash → where it sat, for resume with proof. Memory only.
+ * Insertion order is expiry order, so the oldest entries are at the front.
+ * @type {Map<string, { room_id: string, agent_id: string, expired_at: number }>}
+ */
+const resumable = new Map();
 
 /** Absolute path of the attached store file, or null (memory only). */
 let storeFile = null;
@@ -304,6 +320,7 @@ function removeStaleTemps(file) {
  */
 function attach(file, { legacyAi = null, log = console } = {}) {
   storeFile = null;
+  resumable.clear();
   if (!file) {
     clearAll();
     return { file: null, status: 'memory', rooms: aiRooms.size };
@@ -408,12 +425,44 @@ function expireIdle(room) {
   const expired = [];
   for (const entry of Array.from(room.roster.values())) {
     if (t - lastSeenMs(entry) > ttl) {
-      for (const h of entry.credential_hashes) credentials.delete(h);
+      for (const h of entry.credential_hashes) {
+        if (credentials.delete(h)) rememberExpired(h, room.id, entry.agent_id, t);
+      }
       room.roster.delete(entry.agent_id);
       expired.push(entry.agent_id);
     }
   }
   return expired;
+}
+
+/** Drop resume entries past the retention window (oldest first; stops at the first live one). */
+function pruneResumable(t) {
+  for (const [h, e] of resumable) {
+    if (t - e.expired_at < RESUME_RETENTION_MS) break;
+    resumable.delete(h);
+  }
+}
+
+function rememberExpired(hash, roomId, agentId, t) {
+  pruneResumable(t);
+  resumable.delete(hash);
+  resumable.set(hash, { room_id: roomId, agent_id: agentId, expired_at: t });
+  while (resumable.size > RESUME_MAX) resumable.delete(resumable.keys().next().value);
+}
+
+/**
+ * Is `token` an expired credential of this very seat, still within retention? If so, consume it
+ * (one resume per old token) and return true.
+ */
+function takeResume(room, agentId, token) {
+  if (!token || typeof token !== 'string') return false;
+  const t = clock();
+  pruneResumable(t);
+  const hash = hashCredential(token);
+  const e = resumable.get(hash);
+  if (!e || e.room_id !== room.id || e.agent_id !== agentId) return false;
+  resumable.delete(hash);
+  return t - e.expired_at < RESUME_RETENTION_MS;
 }
 
 /** Record activity by a seat (no-op if it is not on the roster). Not written to disk on its own. */
@@ -495,7 +544,7 @@ function prepareJoin(room, agentId, auth = {}) {
 }
 
 /**
- * Join (or re-join) an agent. Returns { room, credential, created: boolean }.
+ * Join (or re-join) an agent. Returns { room, credential, created: boolean, resumed: boolean }.
  *
  * The join route is unauthenticated, so an agent that is already present never has a
  * credential handed out (neither its live one nor a newly minted one): a re-join must
@@ -504,14 +553,15 @@ function prepareJoin(room, agentId, auth = {}) {
  * minted and nothing is written. Anyone else gets `handle_taken`. An agent that is absent
  * (never joined, or left) joins fresh and gets a new credential. A present entry with no
  * live credential at all (only possible from a partial legacy import; nobody could post
- * or leave as it) is re-claimed like an absent id.
+ * or leave as it) is re-claimed like an absent id. A fresh join whose Bearer is this seat's
+ * expired credential (see resume with proof above) is `resumed: true`.
  */
 function joinAgent(room, agentId, auth = {}) {
   if (room.roster.has(agentId)) {
     const existing = room.roster.get(agentId);
     if (holdsCredential(room, existing, auth.credential)) {
       touch(room, agentId);
-      return { room, credential: auth.credential, created: false };
+      return { room, credential: auth.credential, created: false, resumed: false };
     }
     if (hasLiveCredential(room, existing)) {
       throw identityError(
@@ -522,7 +572,7 @@ function joinAgent(room, agentId, auth = {}) {
     const token = issueCredential(room, existing);
     existing.last_seen = nowIso();
     save();
-    return { room, credential: token, created: false };
+    return { room, credential: token, created: false, resumed: false };
   }
   if (room.roster.size >= MAX_PARTIES) {
     const err = new Error('room_full');
@@ -534,7 +584,8 @@ function joinAgent(room, agentId, auth = {}) {
   room.roster.set(agentId, entry);
   const token = issueCredential(room, entry);
   save();
-  return { room, credential: token, created: true };
+  const resumed = takeResume(room, agentId, auth.credential);
+  return { room, credential: token, created: true, resumed };
 }
 
 function resolveCredential(token) {
@@ -544,11 +595,13 @@ function resolveCredential(token) {
 
 /**
  * Resolve a Bearer token after expiring idle seats in its room, and record the call as
- * activity by that seat. A token whose seat timed out resolves to null.
+ * activity by that seat. A token whose seat timed out resolves to null. With `roomId`, a token
+ * for another room resolves to null before anything is swept or refreshed.
  */
-function authenticate(token) {
+function authenticate(token, roomId) {
   const binding = resolveCredential(token);
   if (!binding) return null;
+  if (roomId !== undefined && binding.room_id !== roomId) return null;
   const room = getRoom(binding.room_id);
   const live = resolveCredential(token);
   if (live && room) touch(room, live.agent_id);
@@ -586,6 +639,7 @@ function leaveAgent(room, agentId) {
 function clearAll() {
   aiRooms.clear();
   credentials.clear();
+  resumable.clear();
   presenceEpoch = clock();
   ensureWelcomeLobby();
   save();
@@ -611,6 +665,8 @@ module.exports = {
   describePresenceTtl,
   DEFAULT_PRESENCE_TTL_MS,
   MIN_PRESENCE_TTL_MS,
+  RESUME_RETENTION_MS,
+  RESUME_MAX,
   appendMessage,
   leaveAgent,
   ensureWelcomeLobby,
@@ -622,6 +678,7 @@ module.exports = {
   hashCredential,
   _aiRooms: aiRooms,
   _credentials: credentials,
+  _resumable: resumable,
   _setClock,
   /** Tests: pretend the server booted at `ms` (default now). */
   _setPresenceEpoch(ms) {
