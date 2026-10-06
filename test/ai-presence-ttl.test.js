@@ -85,9 +85,13 @@ describe('AI presence TTL', () => {
         assert.equal(aiStore.presenceTtlMs(), TTL, bad);
       }
       assert.equal(warnings.length, 6);
-      assert.ok(warnings.every((w) => w.startsWith('AI_PRESENCE_TTL_MS=')));
+      // Same "[tag] WARNING: NAME=value" shape as the rate knobs, so log alerts on WARNING catch it.
+      assert.ok(warnings.every((w) => w.startsWith('[presence] WARNING: AI_PRESENCE_TTL_MS=')));
+      assert.match(warnings[0], /AI_PRESENCE_TTL_MS="10m" is not a whole number of ms; using the default 600000\./);
       process.env.AI_PRESENCE_TTL_MS = '1';
       assert.equal(aiStore.presenceTtlMs(), aiStore.MIN_PRESENCE_TTL_MS);
+      assert.equal(warnings.length, 7);
+      assert.match(warnings[6], /^\[presence\] WARNING: AI_PRESENCE_TTL_MS="1" is below the 30000 ms minimum/);
       process.env.AI_PRESENCE_TTL_MS = '45000';
       assert.equal(aiStore.presenceTtlMs(), 45000);
       process.env.AI_PRESENCE_TTL_MS = '0';
@@ -168,7 +172,7 @@ describe('AI presence TTL', () => {
     assert.deepEqual(ids(r), ['claude-x']);
   });
 
-  it('an expired seat\'s old credential is rejected (401) for post, read, leave and Bearer re-join', async () => {
+  it('an expired seat\'s old credential is rejected (401) for post, read and leave; a Bearer re-join with it gets a new credential', async () => {
     const old = (await join('ghost-bot')).data.credential;
     const hashes = seat('ghost-bot').credential_hashes.slice();
     t += TTL + 1;
@@ -182,12 +186,29 @@ describe('AI presence TTL', () => {
     for (const h of hashes) assert.equal(aiStore._credentials.has(h), false);
     assert.equal(aiStore.resolveCredential(old), null);
 
-    // Re-joining with the old Bearer is a fresh join: new credential, old one stays dead.
+    // Re-joining with the old Bearer mints a new credential (a resume, see ai-resume.test.js);
+    // the old one stays dead.
     const back = await join('ghost-bot', old);
     assert.equal(back.status, 200);
     assert.notEqual(back.data.credential, old);
     assert.equal((await post(old, 'still late')).status, 401);
     assert.equal((await post(back.data.credential, 'hi')).status, 201);
+  });
+
+  it('a token used against the wrong room gets 401 without refreshing its own seat', async () => {
+    const t0 = t;
+    const mine = (await join('roamer')).data.credential;
+    const other = (await send('POST', '/api/ai/rooms', { party: 'ai', agent_id: 'host' })).data;
+    t += 8 * MIN;
+    const wrong = await read(mine, other.room_id);
+    assert.equal(wrong.status, 401);
+    assert.equal(wrong.data.error.code, 'invalid_credential');
+    assert.equal((await post(mine, 'wrong room', other.room_id)).status, 401);
+    assert.equal(seat('roamer').last_seen, iso(t0));
+    // Not refreshed, so it expires on the original clock.
+    t += 3 * MIN;
+    assert.equal((await read(mine)).status, 401);
+    assert.equal(seat('roamer'), undefined);
   });
 
   it('AI_PRESENCE_TTL_MS configures the TTL; 0 turns expiry off', async () => {
