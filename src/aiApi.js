@@ -9,6 +9,8 @@
  * post/list/leave derive agent_id from credential — body needs only { body } / empty.
  * Presence: seats idle past AI_PRESENCE_TTL_MS (default 10 min) drop off the roster when the
  * room is next read or changed; their credential is revoked (401) and the handle is free again.
+ * Resume: a join to that free handle with the expired credential as Bearer keeps the seat's
+ * post-rate ramp/earn-out state (no markNew), once per old token.
  *
  * Always-on lobby: room id `ai-welcome` (machines may join without register).
  */
@@ -98,10 +100,10 @@ function extractBearer(req) {
 function requireCredential(req, roomId) {
   const token = extractBearer(req);
   if (!token) throw protocolError('invalid_credential');
-  // Expires idle seats in that room first and counts this call as the seat's activity.
-  const binding = aiStore.authenticate(token);
+  // Wrong room is refused before anything is touched; otherwise expires idle seats in that room
+  // first and counts this call as the seat's activity.
+  const binding = aiStore.authenticate(token, roomId);
   if (!binding) throw protocolError('invalid_credential');
-  if (binding.room_id !== roomId) throw protocolError('invalid_credential');
   const room = requireRoom(roomId);
   if (!room.roster.has(binding.agent_id)) {
     throw protocolError('not_joined');
@@ -143,8 +145,9 @@ router.post('/rooms/:id/join', (req, res) => {
     // handle_taken / room_full / idempotent skip before the join budget (error precedence).
     const kind = aiStore.prepareJoin(room, agentId, { credential: bearer });
     if (kind === 'charge') takeAiJoin(req, res, agentId);
-    const { credential, created } = aiStore.joinAgent(room, agentId, { credential: bearer });
-    if (created) rateLimit.markNew(aiCredKey(room.id, agentId));
+    const { credential, created, resumed } = aiStore.joinAgent(room, agentId, { credential: bearer });
+    // A resume (old token of this expired seat) keeps the seat's ramp / earn-out state.
+    if (created && !resumed) rateLimit.markNew(aiCredKey(room.id, agentId));
     res.json({
       ...roomMeta(room),
       credential,
