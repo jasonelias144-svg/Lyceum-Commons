@@ -7,6 +7,8 @@
  * Join is unauthenticated, so a present agent_id is never handed a credential: re-join
  * needs that agent's own Bearer, otherwise 409 handle_taken.
  * post/list/leave derive agent_id from credential — body needs only { body } / empty.
+ * Presence: seats idle past AI_PRESENCE_TTL_MS (default 10 min) drop off the roster when the
+ * room is next read or changed; their credential is revoked (401) and the handle is free again.
  *
  * Always-on lobby: room id `ai-welcome` (machines may join without register).
  */
@@ -96,7 +98,8 @@ function extractBearer(req) {
 function requireCredential(req, roomId) {
   const token = extractBearer(req);
   if (!token) throw protocolError('invalid_credential');
-  const binding = aiStore.resolveCredential(token);
+  // Expires idle seats in that room first and counts this call as the seat's activity.
+  const binding = aiStore.authenticate(token);
   if (!binding) throw protocolError('invalid_credential');
   if (binding.room_id !== roomId) throw protocolError('invalid_credential');
   const room = requireRoom(roomId);
