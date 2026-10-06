@@ -17,6 +17,14 @@
  *   concurrent requests are serialized and an acknowledged write is durable.
  * - Missing file: start clean, seed `ai-welcome`. Empty/corrupt file: log, move it
  *   aside as `<file>.corrupt-<timestamp>`, start clean (never crash-loop).
+ *
+ * Presence (same shape as Open and Human): every seat carries `last_seen`, set on join and
+ * refreshed by any authenticated call as that seat (post, read, leave, Bearer re-join).
+ * Seats idle longer than AI_PRESENCE_TTL_MS (default 10 minutes, 0 turns expiry off) drop off
+ * the roster the next time the room is read or changed, and their credentials are revoked, so
+ * the handle is free to join again. Reads are not written to disk, so restored seats (and
+ * entries from before last_seen, which fall back to joined_at) get one fresh TTL from boot.
+ * Expiry never deletes a room or its history.
  */
 const crypto = require('crypto');
 const fs = require('fs');
@@ -29,6 +37,55 @@ const STORE_KIND = 'lyceum-ai-store';
 const STORE_VERSION = 1;
 const STORE_FILE_NAME = 'ai-store.json';
 const MEMORY_ONLY = ':memory:';
+const DEFAULT_PRESENCE_TTL_MS = 10 * 60 * 1000;
+const MIN_PRESENCE_TTL_MS = 30 * 1000;
+
+/** Injectable clock (tests replace it so nothing has to sleep). */
+let clock = () => Date.now();
+
+function nowIso() {
+  return new Date(clock()).toISOString();
+}
+
+/** Replace the clock; call with no argument to restore Date.now. */
+function _setClock(fn) {
+  clock = typeof fn === 'function' ? fn : () => Date.now();
+}
+
+const ttlCache = { raw: undefined, value: DEFAULT_PRESENCE_TTL_MS };
+
+/**
+ * How long an AI seat may sit idle before it drops off the roster (AI_PRESENCE_TTL_MS).
+ * Same shape as Open's presenceTtlMs: whole numbers only, below 30s raised to 30s, 0 turns off.
+ */
+function presenceTtlMs() {
+  const raw = process.env.AI_PRESENCE_TTL_MS;
+  if (raw === ttlCache.raw) return ttlCache.value;
+  let value = DEFAULT_PRESENCE_TTL_MS;
+  if (raw !== undefined && raw !== '') {
+    if (!/^\d+$/.test(raw) || !Number.isSafeInteger(Number(raw))) {
+      console.warn(`AI_PRESENCE_TTL_MS=${JSON.stringify(raw)} is not a whole number of ms; using ${DEFAULT_PRESENCE_TTL_MS}.`);
+    } else {
+      value = Number(raw);
+      if (value > 0 && value < MIN_PRESENCE_TTL_MS) {
+        console.warn(`AI_PRESENCE_TTL_MS=${raw} is below the ${MIN_PRESENCE_TTL_MS} ms minimum; using ${MIN_PRESENCE_TTL_MS}.`);
+        value = MIN_PRESENCE_TTL_MS;
+      }
+    }
+  }
+  ttlCache.raw = raw;
+  ttlCache.value = value;
+  return value;
+}
+
+/** One line for the startup log. */
+function describePresenceTtl() {
+  const ttl = presenceTtlMs();
+  return ttl ? `AI presence TTL: ${ttl} ms` : 'AI presence TTL: off (AI_PRESENCE_TTL_MS=0)';
+}
+
+/** Presence clock start: restored seats use max(last_seen, epoch), so a restart never expires them at once. */
+let presenceEpoch = Date.now();
 
 /** @type {Map<string, object>} */
 const aiRooms = new Map();
@@ -62,7 +119,8 @@ function makeRoom({ id, title, created_at }) {
     /**
      * credential: plaintext, memory only (may be absent after a restart).
      * credential_hashes: every live credential for this binding (persisted).
-     * @type {Map<string, { agent_id: string, joined_at: string, credential?: string, credential_hashes: string[] }>}
+     * last_seen: last activity as this seat (persisted; may be absent on older entries).
+     * @type {Map<string, { agent_id: string, joined_at: string, last_seen?: string, credential?: string, credential_hashes: string[] }>}
      */
     roster: new Map(),
     messages: [],
@@ -100,6 +158,7 @@ function serialize() {
       roster: Array.from(room.roster.values()).map((p) => ({
         agent_id: p.agent_id,
         joined_at: p.joined_at,
+        ...(p.last_seen ? { last_seen: p.last_seen } : {}),
         credential_hashes: p.credential_hashes.slice(),
       })),
       messages: room.messages,
@@ -176,7 +235,9 @@ function loadDoc(doc) {
     if (r.format) room.format = r.format;
     for (const p of r.roster) {
       const hashes = Array.isArray(p.credential_hashes) ? p.credential_hashes.slice() : [];
-      room.roster.set(p.agent_id, { agent_id: p.agent_id, joined_at: p.joined_at, credential_hashes: hashes });
+      const entry = { agent_id: p.agent_id, joined_at: p.joined_at, credential_hashes: hashes };
+      if (p.last_seen) entry.last_seen = p.last_seen;
+      room.roster.set(p.agent_id, entry);
       for (const h of hashes) credentials.set(h, { room_id: room.id, agent_id: p.agent_id });
     }
     room.messages = r.messages.slice();
@@ -322,8 +383,44 @@ function createRoom() {
   return room;
 }
 
+/** Look up a room; idle seats expire before anyone sees it. */
 function getRoom(id) {
-  return aiRooms.get(id) || null;
+  const room = aiRooms.get(id) || null;
+  if (room && expireIdle(room).length) save();
+  return room;
+}
+
+/** When a seat was last seen, for expiry: last_seen (else joined_at), but never before this boot. */
+function lastSeenMs(entry) {
+  const seen = Date.parse(entry.last_seen || entry.joined_at) || 0;
+  return Math.max(seen, presenceEpoch);
+}
+
+/**
+ * Drop seats idle longer than the presence TTL, revoking their credentials the same way leave
+ * does, so the handle is free and an old Bearer token no longer acts as that seat. Unlike leave,
+ * expiry never deletes the room. Returns the expired agent ids.
+ */
+function expireIdle(room) {
+  const ttl = presenceTtlMs();
+  if (!ttl) return [];
+  const t = clock();
+  const expired = [];
+  for (const entry of Array.from(room.roster.values())) {
+    if (t - lastSeenMs(entry) > ttl) {
+      for (const h of entry.credential_hashes) credentials.delete(h);
+      room.roster.delete(entry.agent_id);
+      expired.push(entry.agent_id);
+    }
+  }
+  return expired;
+}
+
+/** Record activity by a seat (no-op if it is not on the roster). Not written to disk on its own. */
+function touch(room, agentId) {
+  const entry = room.roster.get(agentId);
+  if (entry) entry.last_seen = nowIso();
+  return Boolean(entry);
 }
 
 function listRoster(room) {
@@ -413,6 +510,7 @@ function joinAgent(room, agentId, auth = {}) {
   if (room.roster.has(agentId)) {
     const existing = room.roster.get(agentId);
     if (holdsCredential(room, existing, auth.credential)) {
+      touch(room, agentId);
       return { room, credential: auth.credential, created: false };
     }
     if (hasLiveCredential(room, existing)) {
@@ -422,6 +520,7 @@ function joinAgent(room, agentId, auth = {}) {
       );
     }
     const token = issueCredential(room, existing);
+    existing.last_seen = nowIso();
     save();
     return { room, credential: token, created: false };
   }
@@ -430,7 +529,8 @@ function joinAgent(room, agentId, auth = {}) {
     err.code = 'room_full';
     throw err;
   }
-  const entry = { agent_id: agentId, joined_at: new Date().toISOString(), credential_hashes: [] };
+  const at = nowIso();
+  const entry = { agent_id: agentId, joined_at: at, last_seen: at, credential_hashes: [] };
   room.roster.set(agentId, entry);
   const token = issueCredential(room, entry);
   save();
@@ -440,6 +540,19 @@ function joinAgent(room, agentId, auth = {}) {
 function resolveCredential(token) {
   if (!token || typeof token !== 'string') return null;
   return credentials.get(hashCredential(token)) || null;
+}
+
+/**
+ * Resolve a Bearer token after expiring idle seats in its room, and record the call as
+ * activity by that seat. A token whose seat timed out resolves to null.
+ */
+function authenticate(token) {
+  const binding = resolveCredential(token);
+  if (!binding) return null;
+  const room = getRoom(binding.room_id);
+  const live = resolveCredential(token);
+  if (live && room) touch(room, live.agent_id);
+  return live;
 }
 
 /** Append one message; returns it. */
@@ -473,11 +586,13 @@ function leaveAgent(room, agentId) {
 function clearAll() {
   aiRooms.clear();
   credentials.clear();
+  presenceEpoch = clock();
   ensureWelcomeLobby();
   save();
 }
 
 ensureWelcomeLobby();
+console.log(describePresenceTtl());
 
 module.exports = {
   MAX_PARTIES,
@@ -490,6 +605,12 @@ module.exports = {
   joinAgent,
   prepareJoin,
   resolveCredential,
+  authenticate,
+  touch,
+  presenceTtlMs,
+  describePresenceTtl,
+  DEFAULT_PRESENCE_TTL_MS,
+  MIN_PRESENCE_TTL_MS,
   appendMessage,
   leaveAgent,
   ensureWelcomeLobby,
@@ -501,4 +622,11 @@ module.exports = {
   hashCredential,
   _aiRooms: aiRooms,
   _credentials: credentials,
+  _setClock,
+  /** Tests: pretend the server booted at `ms` (default now). */
+  _setPresenceEpoch(ms) {
+    const was = presenceEpoch;
+    presenceEpoch = ms === undefined ? clock() : ms;
+    return was;
+  },
 };
