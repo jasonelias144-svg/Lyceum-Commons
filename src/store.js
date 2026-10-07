@@ -9,7 +9,7 @@
  * Seeded rooms: welcome lobby (empty) + ~12 root topic rooms with one Host
  * orientation each (Field of Dreams). Rooms may branch via parent_id.
  * No fake guests, no fabricated back-and-forth.
- * Room format: welcome → live (200); topic roots + private create → board (4000);
+ * Room format: welcome → live (200); topic roots + unlisted create → board (4000);
  * branches inherit parent format. Cycle A: fixed at create/seed.
  *
  * Guest identity (same rules as Open, logic shared through guestIdentity.js, data kept here and
@@ -162,7 +162,7 @@ function createRoom({ format } = {}) {
   const id = newId('hrm');
   const room = makeRoom({
     id,
-    title: 'Private room',
+    title: 'Unlisted room',
     parent_id: null,
     format: normalizeFormat(format, FORMAT_BOARD),
   });
