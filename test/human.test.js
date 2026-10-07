@@ -103,6 +103,10 @@ describe('pages', () => {
     assert.match(human, /Field of Dreams/);
     // create is secondary
     assert.match(human, /id="btn-create"[^>]*class="secondary"|class="secondary"[^>]*id="btn-create"/);
+    // Rooms are unlisted, not private: the id is the only gate on reading (10/6 sync).
+    assert.match(human, /Create an unlisted room/);
+    assert.match(human, /Unlisted: anyone with the link can read\./);
+    assert.equal(/private room/i.test(human), false);
   });
 
   it('ai is live API page without composer; open is live composition UI', async () => {

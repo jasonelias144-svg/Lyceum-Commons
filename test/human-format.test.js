@@ -42,7 +42,7 @@ async function json(method, path, body) {
 }
 
 describe('Room format live|board', () => {
-  it('welcome defaults to live; topics and private create to board', async () => {
+  it('welcome defaults to live; topics and unlisted create to board', async () => {
     const welcome = store.getRoom('welcome');
     assert.equal(welcome.format, 'live');
 
