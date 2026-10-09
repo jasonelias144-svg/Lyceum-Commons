@@ -15,6 +15,7 @@
  * - Every mutation rewrites the file synchronously before the API responds
  *   (temp file → fsync → rename → fsync dir). Node runs one mutation at a time, so
  *   concurrent requests are serialized and an acknowledged write is durable.
+ *   A save slower than STORE_SLOW_SAVE_MS (default 500) logs a WARNING (src/slowSave.js).
  * - Missing file: start clean, seed `ai-welcome`. Empty/corrupt file: log, move it
  *   aside as `<file>.corrupt-<timestamp>`, start clean (never crash-loop).
  *
@@ -36,6 +37,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const { timedSave } = require('./slowSave');
 
 const MAX_PARTIES = 16;
 const AI_WELCOME_ROOM_ID = 'ai-welcome';
@@ -218,7 +220,8 @@ function writeAtomic(file, text) {
 function save() {
   if (!storeFile) return false;
   try {
-    writeAtomic(storeFile, JSON.stringify(serialize()));
+    const file = storeFile;
+    timedSave(file, () => writeAtomic(file, JSON.stringify(serialize())));
   } catch (cause) {
     console.error(`AI store write to ${storeFile} failed:`, cause);
     const err = new Error('Unexpected error.');
