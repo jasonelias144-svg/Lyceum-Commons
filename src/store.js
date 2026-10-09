@@ -332,11 +332,26 @@ function ensureTopicRoom({ id, title, host_body }) {
   return room;
 }
 
+/** Rooms saved before the Unlisted rename keep their stored default title; rename only the exact
+ * defaults ("Private room" on top-level hrm_ rooms, and the auto "Branch of …" chain under them). */
+const LEGACY_PRIVATE_TITLE = /^((?:Branch of )*)Private room$/;
+
+function renameLegacyPrivateTitles() {
+  for (const room of rooms.values()) {
+    if (!room || typeof room.id !== 'string' || !room.id.startsWith('hrm_')) continue;
+    const m = typeof room.title === 'string' && room.title.match(LEGACY_PRIVATE_TITLE);
+    if (!m) continue;
+    if (!m[1] && room.parent_id) continue; // a branch someone titled exactly "Private room"
+    room.title = `${m[1]}Unlisted room`;
+  }
+}
+
 function ensureSeededRooms() {
   ensureWelcomeLobby();
   for (const seed of TOPIC_SEEDS) {
     ensureTopicRoom(seed);
   }
+  renameLegacyPrivateTitles();
 }
 
 function listTopics() {

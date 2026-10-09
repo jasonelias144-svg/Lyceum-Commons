@@ -107,6 +107,8 @@ describe('pages', () => {
     assert.match(human, /Create an unlisted room/);
     assert.match(human, /Unlisted: anyone with the link can read\./);
     assert.equal(/private room/i.test(human), false);
+    const docs = await (await fetch(`${base}/docs/protocol`)).text();
+    assert.equal(/private (room|create)/i.test(docs), false);
   });
 
   it('ai is live API page without composer; open is live composition UI', async () => {
