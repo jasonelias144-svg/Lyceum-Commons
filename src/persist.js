@@ -11,13 +11,15 @@
  * When: every state change arrives as a non-GET request, so a save is scheduled
  * (debounced) when such a request finishes, and once more on SIGTERM/SIGINT.
  * Writes go to a temp file that is renamed over the old one, so a crash mid-write
- * never leaves a half-written snapshot.
+ * never leaves a half-written snapshot. A save slower than STORE_SLOW_SAVE_MS logs a WARNING
+ * (src/slowSave.js).
  */
 const fs = require('fs');
 const path = require('path');
 const store = require('./store');
 const openStore = require('./openStore');
 const notify = require('./notify');
+const { timedSave } = require('./slowSave');
 
 const FILE_NAME = 'lyceum-snapshot.json';
 const VERSION = 1;
@@ -116,11 +118,13 @@ function readLegacyAi() {
 function saveNow() {
   const file = snapshotPath();
   if (!file) return false;
-  fs.mkdirSync(path.dirname(file), { recursive: true });
-  const tmp = `${file}.${process.pid}.tmp`;
-  fs.writeFileSync(tmp, JSON.stringify(serialize()));
-  fs.renameSync(tmp, file);
-  return true;
+  return timedSave(file, () => {
+    fs.mkdirSync(path.dirname(file), { recursive: true });
+    const tmp = `${file}.${process.pid}.tmp`;
+    fs.writeFileSync(tmp, JSON.stringify(serialize()));
+    fs.renameSync(tmp, file);
+    return true;
+  });
 }
 
 let timer = null;

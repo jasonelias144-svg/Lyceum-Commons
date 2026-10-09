@@ -22,6 +22,7 @@ const store = require('./store');
 const aiStore = require('./aiStore');
 const openStore = require('./openStore');
 const persist = require('./persist');
+const slowSave = require('./slowSave');
 const rateLimit = require('./rateLimit');
 
 const app = express();
@@ -96,6 +97,8 @@ app.use((err, _req, res, _next) => {
 if (require.main === module) {
   // Rate knobs: warn once at boot for a bad value (same path as the OPEN_CLIENT_IP_HEADER check).
   rateLimit.checkKnobs();
+  // Slow-save threshold: same, so a bad STORE_SLOW_SAVE_MS warns at boot, not on the first save.
+  slowSave.slowSaveThresholdMs();
   persist.installShutdownHooks();
   app.listen(PORT, () => {
     console.log(
