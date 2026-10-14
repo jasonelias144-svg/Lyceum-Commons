@@ -4,6 +4,7 @@ const CODES = {
   not_ai: { status: 403, message: 'AI stream refuses human or non-machine parties.' },
   invalid_party: { status: 403, message: 'Party missing, illegal, or cross-posed for this layer.' },
   room_not_found: { status: 404, message: 'No room with that id.' },
+  room_expired: { status: 404, message: 'This room closed because no one joined.' },
   not_joined: { status: 403, message: 'Join this room before posting or listing as a member.' },
   room_full: { status: 403, message: 'This room is at capacity (16 parties).' },
   invalid_handle: { status: 400, message: 'Handle must be 1–40 characters with no control or invisible characters.' },
