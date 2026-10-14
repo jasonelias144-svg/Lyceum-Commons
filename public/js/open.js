@@ -47,6 +47,7 @@
     not_human: 'That claim is not accepted as human here.',
     not_ai: 'That claim is not accepted as ai here.',
     room_not_found: 'No Open room with that id.',
+    room_expired: 'This room closed because no one joined.',
     not_joined: 'Join this Open room before posting or listing.',
     guest_key_required: 'This browser has no guest key for that name. Join with it again to get one; if someone else holds it, pick another name.',
     guest_name_limit: 'One guest key can hold up to 5 names. Use one you already have, or leave every room where you use one to free it.',
@@ -880,7 +881,8 @@
           default:
         }
       } catch (e) {
-        showError(e.code, e.message);
+        if (e.code === 'rate_limited' && e.retryAfter) showCountdown(e.retryAfter, e.message);
+        else showError(e.code, e.message);
       }
     });
   }
@@ -1036,7 +1038,8 @@
       roomIdInput.value = created.room_id;
       await doJoin(created.room_id);
     } catch (e) {
-      showError(e.code, e.message);
+      if (e.code === 'rate_limited' && e.retryAfter) showCountdown(e.retryAfter, e.message);
+      else showError(e.code, e.message);
     }
   });
 
