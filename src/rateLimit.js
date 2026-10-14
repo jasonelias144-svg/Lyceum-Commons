@@ -395,6 +395,8 @@ const DEFAULT_AI_JOIN_IP_PER_MIN = 12;
 const DEFAULT_AI_JOIN_AGENT_PER_MIN = 6;
 /** Default Open joins per minute from one address (human and Open-composition AI). */
 const DEFAULT_OPEN_JOIN_IP_PER_MIN = 12;
+/** Default per-address Open room creates a minute (POST /api/open/rooms). */
+const DEFAULT_OPEN_CREATE_IP_PER_MIN = 6;
 /** Default site-wide writing-join backstop shared by Open, /api/ai and Human. */
 const DEFAULT_JOIN_SITE_PER_MIN = 300;
 
@@ -601,6 +603,16 @@ function takeOpenJoin(ipKey) {
   );
 }
 
+/**
+ * One Open room create (POST /api/open/rooms). Per address OPEN_CREATE_IP_RATE_PER_MIN
+ * (default 6); the fallback address shares one bucket at the same rate. 0 turns it off.
+ */
+function takeOpenCreate(ipKey) {
+  const limit = envNumber('OPEN_CREATE_IP_RATE_PER_MIN', DEFAULT_OPEN_CREATE_IP_PER_MIN);
+  if (!(limit > 0)) return 0;
+  return take([{ key: 'open:create:' + ipKey, limit }]);
+}
+
 /** Drops buckets that have refilled completely (a full bucket behaves the same as a new one,
  * except for a key still ramping up, which keeps its bucket until it has). */
 function prune(t) {
@@ -659,6 +671,7 @@ function checkKnobs() {
   envNumber('AI_JOIN_IP_RATE_PER_MIN', DEFAULT_AI_JOIN_IP_PER_MIN);
   envNumber('AI_JOIN_AGENT_RATE_PER_MIN', DEFAULT_AI_JOIN_AGENT_PER_MIN);
   envNumber('OPEN_JOIN_IP_RATE_PER_MIN', DEFAULT_OPEN_JOIN_IP_PER_MIN);
+  envNumber('OPEN_CREATE_IP_RATE_PER_MIN', DEFAULT_OPEN_CREATE_IP_PER_MIN);
   envNumber('JOIN_SITE_RATE_PER_MIN', DEFAULT_JOIN_SITE_PER_MIN);
 }
 
@@ -677,6 +690,7 @@ module.exports = {
   takeAiPost,
   takeAiJoin,
   takeOpenJoin,
+  takeOpenCreate,
   siteJoinSpec,
   markNew,
   allowance,
