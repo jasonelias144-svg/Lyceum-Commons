@@ -220,8 +220,9 @@ function createRoom({ title, visibility } = {}) {
 function listRooms(viewer) {
   const all = Array.from(openRooms.values());
   all.forEach(sweep);
-  if (!viewer) return all;
-  return all.filter((r) => r.visibility !== 'unlisted' || r.roster.has(rosterKey(viewer.party, viewer.id)));
+  const live = all.filter((r) => openRooms.has(r.id));
+  if (!viewer) return live;
+  return live.filter((r) => r.visibility !== 'unlisted' || r.roster.has(rosterKey(viewer.party, viewer.id)));
 }
 
 /** Change a room's name and/or visibility. The welcome lobby always stays listed. */
@@ -803,7 +804,7 @@ function guestInbox(gid) {
 function getRoom(id) {
   const room = openRooms.get(id) || null;
   if (room) sweep(room);
-  return room;
+  return room && openRooms.has(id) ? room : null;
 }
 
 function listRoster(room) {
@@ -909,6 +910,7 @@ function heldGuestIds() {
 }
 
 function sweep(room) {
+  expireUnjoined(room);
   const expired = expireIdle(room);
   releaseIdle(room);
   pruneAwaiting(room);
@@ -1200,6 +1202,32 @@ function leaveAi(room, agentId) {
   return leaveParty(room, 'ai', agentId);
 }
 
+/**
+ * A room nobody has ever joined (empty roster, no members, no messages) is deleted once one
+ * presence TTL has passed since it was created, through maybeGc. Rooms anyone joined keep
+ * the leave-only GC. TTL 0 (expiry off) turns this off too. Returns true if deleted.
+ */
+/** Ids of rooms deleted by expireUnjoined (memory only, oldest dropped past the cap). */
+const expiredUnjoined = new Set();
+const MAX_EXPIRED_UNJOINED = 10000;
+
+function wasExpiredUnjoined(id) {
+  return expiredUnjoined.has(id);
+}
+
+function expireUnjoined(room) {
+  if (room.id === OPEN_WELCOME_ROOM_ID || room.messages.length > 0) return false;
+  const ttl = presenceTtlMs();
+  if (!ttl) return false;
+  const born = Math.max(Date.parse(room.created_at) || 0, presenceEpoch);
+  if (now() - born < ttl) return false;
+  if (!maybeGc(room)) return false;
+  expiredUnjoined.add(room.id);
+  if (expiredUnjoined.size > MAX_EXPIRED_UNJOINED) expiredUnjoined.delete(expiredUnjoined.values().next().value);
+  dirty = true;
+  return true;
+}
+
 /** Delete a room with nobody present and no kept members. The lobby is never deleted. */
 function maybeGc(room) {
   if (room.id === OPEN_WELCOME_ROOM_ID) return false;
@@ -1212,6 +1240,7 @@ function clearAll() {
   indexGeneration++;
   indexing = null;
   openRooms.clear();
+  expiredUnjoined.clear();
   credentials.clear();
   guestRegistry.clear();
   presenceEpoch = now();
@@ -1253,6 +1282,7 @@ module.exports = {
   guestInbox,
   onGuestEvent,
   createRoom,
+  wasExpiredUnjoined,
   listRooms,
   updateRoom,
   VISIBILITIES,
