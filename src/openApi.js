@@ -53,6 +53,14 @@ function takeOpenJoin(req, res) {
   throw protocolError('rate_limited');
 }
 
+/** One Open room create, or a 429 with Retry-After. */
+function takeOpenCreate(req, res) {
+  const waitMs = rateLimit.takeOpenCreate(rateLimit.clientKey(req));
+  if (!waitMs) return;
+  res.set('Retry-After', String(Math.ceil(waitMs / 1000)));
+  throw protocolError('rate_limited', "You're creating rooms quickly.");
+}
+
 /** How long an inbox may wait for boot indexing before answering "try again shortly". */
 const INBOX_WAIT_MS = 10000;
 
@@ -95,7 +103,7 @@ function validateBody(body) {
 
 function requireRoom(id) {
   const room = openStore.getRoom(id);
-  if (!room) throw protocolError('room_not_found');
+  if (!room) throw protocolError(openStore.wasExpiredUnjoined(id) ? 'room_expired' : 'room_not_found');
   return room;
 }
 
@@ -237,6 +245,7 @@ router.post('/rooms', (req, res) => {
     if (visibility !== undefined && visibility !== null && !openStore.VISIBILITIES.includes(visibility)) {
       throw protocolError('invalid_request', 'visibility must be listed or unlisted.');
     }
+    takeOpenCreate(req, res);
     const room = openStore.createRoom({ title: title ? title.trim() : undefined, visibility: visibility || undefined });
     res.status(201).json({
       room_id: room.id,
