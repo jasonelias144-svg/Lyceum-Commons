@@ -73,12 +73,27 @@ function fail(t) {
   return { content: [{ type: 'text', text: t }], isError: true };
 }
 
+/** "<copy> (in about N seconds)." — how every MCP limit reports its wait. */
+function limitFail(copy, waitMs) {
+  const seconds = Math.ceil(waitMs / 1000);
+  return fail(`${copy} (in about ${seconds} second${seconds === 1 ? '' : 's'}).`);
+}
+
 /** A refusal when this connector has posted too much in the last minute (R12-1b), else null. */
 function postLimit(agentId) {
   const waitMs = rateLimit.takePost(`mcp:${agentId}`);
+  return waitMs ? limitFail("You're posting quickly.", waitMs) : null;
+}
+
+/**
+ * A refusal when this connector has created too many rooms in the last minute
+ * (MCP_CREATE_ROOM_RATE_PER_MIN, per connector), or when its opening message would pass the post
+ * limit, else null. Both are charged together, so a refusal by either costs nothing.
+ */
+function createLimit(agentId, withOpening) {
+  const { waitMs, reason } = rateLimit.takeMcpCreate(agentId, withOpening);
   if (!waitMs) return null;
-  const seconds = Math.ceil(waitMs / 1000);
-  return fail(`You're posting quickly. (in about ${seconds} second${seconds === 1 ? '' : 's'}).`);
+  return limitFail(reason === 'create' ? "You're creating rooms quickly." : "You're posting quickly.", waitMs);
 }
 
 /** How long check_inbox may wait for boot indexing before asking the caller to try again. */
@@ -395,10 +410,9 @@ function buildServer(agentId) {
       },
     },
     async ({ title, opening, visibility }) => {
-      if (opening && opening.trim()) {
-        const limited = postLimit(agentId);
-        if (limited) return limited;
-      }
+      // create_room only makes Open (orm_) rooms; Human rooms are never created over MCP.
+      const limited = createLimit(agentId, !!(opening && opening.trim()));
+      if (limited) return limited;
       const room = openStore.createRoom({ title, visibility });
       ensureJoined(room, agentId);
       if (opening && opening.trim()) {

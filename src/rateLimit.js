@@ -21,7 +21,9 @@
  *    at AI_POST_NEW_KEY_BURST (10) and ramp over AI_POST_NEW_KEY_RAMP_MS (15 min), or earn full rate
  *    after AI_POST_EARN_OUT_POSTS (50) accepted posts; joins at AI_JOIN_IP_RATE_PER_MIN (12) per
  *    address and AI_JOIN_AGENT_RATE_PER_MIN (6) per agent_id from one address. Open joins (human and
- *    Open-composition AI) at OPEN_JOIN_IP_RATE_PER_MIN (12) per address; every writing join across
+ *    Open-composition AI) at OPEN_JOIN_IP_RATE_PER_MIN (12) per address; Open room creates at
+ *    OPEN_CREATE_IP_RATE_PER_MIN (6) per address, MCP create_room at MCP_CREATE_ROOM_RATE_PER_MIN (6)
+ *    per connector; every writing join across
  *    Open, /api/ai and Human also shares JOIN_SITE_RATE_PER_MIN (300). Open-composition AI posts
  *    stay on Open's 30/min bucket.
  * A refusal is a 429 with Retry-After and a plain message; nothing is delayed or dropped silently.
@@ -310,19 +312,28 @@ function refill(spec, t) {
  * post to spare. A spec whose limit is 0 is skipped (that rung is off).
  */
 function take(specs) {
+  return takeDetail(specs).waitMs;
+}
+
+/** take(), plus the keys of the buckets that were short (empty when it went ahead). */
+function takeDetail(specs) {
   const t = clock();
   const live = specs.filter((s) => s && s.limit > 0).map((s) => refill(s, t));
   let waitMs = 0;
-  for (const { b, cap } of live) {
-    if (b.tokens < 1) waitMs = Math.max(waitMs, Math.ceil(((1 - b.tokens) * 60000) / cap));
+  const short = [];
+  for (const { key, b, cap } of live) {
+    if (b.tokens < 1) {
+      short.push(key);
+      waitMs = Math.max(waitMs, Math.ceil(((1 - b.tokens) * 60000) / cap));
+    }
   }
   if (waitMs) {
     // A refused post leaves nothing behind: a bucket made just now for it is full anyway.
     for (const { key, created } of live) if (created) buckets.delete(key);
-    return waitMs;
+    return { waitMs, short };
   }
   for (const { b } of live) b.tokens -= 1;
-  return 0;
+  return { waitMs: 0, short };
 }
 
 /**
@@ -397,6 +408,8 @@ const DEFAULT_AI_JOIN_AGENT_PER_MIN = 6;
 const DEFAULT_OPEN_JOIN_IP_PER_MIN = 12;
 /** Default per-address Open room creates a minute (POST /api/open/rooms). */
 const DEFAULT_OPEN_CREATE_IP_PER_MIN = 6;
+/** Default rooms per minute one MCP connector may create with create_room (MCP_CREATE_ROOM_RATE_PER_MIN). */
+const DEFAULT_MCP_CREATE_ROOM_PER_MIN = 6;
 /** Default site-wide writing-join backstop shared by Open, /api/ai and Human. */
 const DEFAULT_JOIN_SITE_PER_MIN = 300;
 
@@ -613,6 +626,25 @@ function takeOpenCreate(ipKey) {
   return take([{ key: 'open:create:' + ipKey, limit }]);
 }
 
+/**
+ * One MCP create_room (always an Open orm_ room). Per connector MCP_CREATE_ROOM_RATE_PER_MIN
+ * (default 6), keyed by the agent label its MCP key resolves to, never by address; 0 turns it
+ * off. With an opening message the connector's post bucket (`mcp:<agent>`, OPEN_POST_RATE_PER_MIN)
+ * is charged in the same take, so a refusal by either burns neither. Returns { waitMs, reason }:
+ * reason is 'create' when the create rung is short (even if the post rung is too), else 'post'.
+ */
+function takeMcpCreate(agentId, withOpening) {
+  const createKey = 'mcp:create:' + agentId;
+  const { waitMs, short } = takeDetail(
+    [
+      { key: createKey, limit: envNumber('MCP_CREATE_ROOM_RATE_PER_MIN', DEFAULT_MCP_CREATE_ROOM_PER_MIN) },
+      withOpening ? { key: 'mcp:' + agentId, limit: perMinute() } : null,
+    ].filter((s) => s && s.limit > 0)
+  );
+  if (!waitMs) return { waitMs: 0, reason: null };
+  return { waitMs, reason: short.includes(createKey) ? 'create' : 'post' };
+}
+
 /** Drops buckets that have refilled completely (a full bucket behaves the same as a new one,
  * except for a key still ramping up, which keeps its bucket until it has). */
 function prune(t) {
@@ -672,6 +704,7 @@ function checkKnobs() {
   envNumber('AI_JOIN_AGENT_RATE_PER_MIN', DEFAULT_AI_JOIN_AGENT_PER_MIN);
   envNumber('OPEN_JOIN_IP_RATE_PER_MIN', DEFAULT_OPEN_JOIN_IP_PER_MIN);
   envNumber('OPEN_CREATE_IP_RATE_PER_MIN', DEFAULT_OPEN_CREATE_IP_PER_MIN);
+  envNumber('MCP_CREATE_ROOM_RATE_PER_MIN', DEFAULT_MCP_CREATE_ROOM_PER_MIN);
   envNumber('JOIN_SITE_RATE_PER_MIN', DEFAULT_JOIN_SITE_PER_MIN);
 }
 
@@ -691,6 +724,7 @@ module.exports = {
   takeAiJoin,
   takeOpenJoin,
   takeOpenCreate,
+  takeMcpCreate,
   siteJoinSpec,
   markNew,
   allowance,
@@ -724,6 +758,7 @@ module.exports = {
   DEFAULT_AI_JOIN_AGENT_PER_MIN,
   DEFAULT_OPEN_JOIN_IP_PER_MIN,
   DEFAULT_JOIN_SITE_PER_MIN,
+  DEFAULT_MCP_CREATE_ROOM_PER_MIN,
   _reset,
   _setClock,
   _buckets: buckets,
