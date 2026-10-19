@@ -419,7 +419,24 @@ router.post('/rooms/:id/leave', (req, res) => {
       if (party === 'human' || (rawHandle !== undefined && rawHandle !== null && rawHandle !== '')) {
         throw protocolError('invalid_party');
       }
-      const { room, agent_id: agentId } = requireAiCredential(req, roomId);
+      let cred;
+      try {
+        cred = requireAiCredential(req, roomId);
+      } catch (err) {
+        // A seat the presence TTL expired may still leave: drops its membership, may delete the room.
+        if (err && err.code === 'invalid_credential' && openStore.leaveExpiredAi(bearer, roomId)) {
+          const after = openStore.getRoom(roomId);
+          return res.json({
+            ok: true,
+            already_left: true,
+            ...(after
+              ? { ...roomMeta(after), roster: openStore.listRoster(after) }
+              : { room_id: roomId, layer: 'open', roster: [] }),
+          });
+        }
+        throw err;
+      }
+      const { room, agent_id: agentId } = cred;
       openStore.leaveAi(room, agentId);
       const still = openStore.getRoom(roomId);
       return res.json({
