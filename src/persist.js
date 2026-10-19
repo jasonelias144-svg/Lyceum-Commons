@@ -90,6 +90,8 @@ function restore(snap) {
   notify.restoreSubscriptions(snap.open && snap.open.webhooks);
   store.ensureSeededRooms();
   openStore.ensureWelcomeLobby();
+  // MCP-made rooms from before room.mcp_creator: mark them so their creator's seat can empty them.
+  openStore.adoptLegacyMcpRooms();
   // Mention indexes are kept only in memory. Build them a slice at a time once the server is
   // answering (R12-1b); an inbox waits until they are all there (R12-1).
   openStore.indexMentionsInBackground();
