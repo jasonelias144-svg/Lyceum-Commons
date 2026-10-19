@@ -858,6 +858,7 @@ function expireIdle(room) {
     // Restored entries (no last_seen, or one from before this boot) show the boot time.
     if (!entry.last_seen || Date.parse(entry.last_seen) < seen) entry.last_seen = new Date(seen).toISOString();
     if (ttl && t - seen > ttl) {
+      if (entry.party === 'ai' && entry.credential) rememberExpiredAi(entry.credential, room.id, entry.id);
       removeParty(room, entry.party, entry.id, { dropTurn: false });
       restartGrace(room, entry.id, seen + ttl);
       expired.push({ id: entry.id, party: entry.party });
@@ -1228,6 +1229,48 @@ function expireUnjoined(room) {
   return true;
 }
 
+/**
+ * AI credentials revoked by the presence TTL sweep (sha256 of the token -> room and agent),
+ * memory only, so a timed-out AI can still leave (and let its room be deleted). Oldest
+ * dropped past the cap; entries older than a day are ignored. Only leave consults this:
+ * post and read with an expired token stay 401.
+ */
+const expiredAiCredentials = new Map();
+const MAX_EXPIRED_AI_CREDENTIALS = 10000;
+const EXPIRED_AI_CREDENTIAL_MAX_AGE_MS = 24 * 60 * 60 * 1000;
+
+function credentialHash(token) {
+  return require('node:crypto').createHash('sha256').update(token).digest('hex');
+}
+
+function rememberExpiredAi(token, roomId, agentId) {
+  const k = credentialHash(token);
+  expiredAiCredentials.delete(k);
+  expiredAiCredentials.set(k, { room_id: roomId, agent_id: agentId, at: now() });
+  if (expiredAiCredentials.size > MAX_EXPIRED_AI_CREDENTIALS) {
+    expiredAiCredentials.delete(expiredAiCredentials.keys().next().value);
+  }
+}
+
+/**
+ * Leave with an AI credential the TTL sweep revoked for this room: ends that agent's
+ * membership through the normal leave path (so maybeGc can delete an emptied room) and
+ * forgets the token, so a second leave with it is 401. Returns { agent_id } or null when the
+ * token is unknown, for another room, too old, or its agent is present again on a new seat.
+ */
+function leaveExpiredAi(token, roomId) {
+  if (!token || typeof token !== 'string') return null;
+  const k = credentialHash(token);
+  const rec = expiredAiCredentials.get(k);
+  if (!rec || rec.room_id !== roomId) return null;
+  expiredAiCredentials.delete(k);
+  if (now() - rec.at > EXPIRED_AI_CREDENTIAL_MAX_AGE_MS) return null;
+  const room = openRooms.get(roomId);
+  if (!room || hasAi(room, rec.agent_id)) return null;
+  leaveParty(room, 'ai', rec.agent_id);
+  return { agent_id: rec.agent_id };
+}
+
 /** Delete a room with nobody present and no kept members. The lobby is never deleted. */
 function maybeGc(room) {
   if (room.id === OPEN_WELCOME_ROOM_ID) return false;
@@ -1241,6 +1284,7 @@ function clearAll() {
   indexing = null;
   openRooms.clear();
   expiredUnjoined.clear();
+  expiredAiCredentials.clear();
   credentials.clear();
   guestRegistry.clear();
   presenceEpoch = now();
@@ -1310,6 +1354,7 @@ module.exports = {
   hasAi,
   leaveHuman,
   leaveAi,
+  leaveExpiredAi,
   ensureWelcomeLobby,
   clearAll,
   _setClock,
