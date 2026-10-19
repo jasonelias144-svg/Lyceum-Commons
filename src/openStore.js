@@ -208,8 +208,9 @@ function createRoom({ title, visibility, mcpCreator } = {}) {
   const id = newId('orm');
   const room = makeRoom({ id, title: title || 'Open room' });
   if (visibility === 'unlisted') room.visibility = 'unlisted';
-  // Made by the MCP create_room tool: the creator's membership ends with its seat (see expireMcpCreator).
-  if (mcpCreator) room.mcp_creator = mcpCreator;
+  // MCP create_room passes its agent: the creator's membership ends with its seat (see
+  // expireMcpCreator). Every other room stores null, so it is never taken for a legacy MCP room.
+  room.mcp_creator = mcpCreator || null;
   openRooms.set(id, room);
   return room;
 }
@@ -1293,15 +1294,19 @@ function expireMcpCreator(room) {
 }
 
 /**
- * Rooms from snapshots before room.mcp_creator existed: an orm_ room whose only member is one
- * AI, with nobody else on the roster and every message by that AI, is what MCP create_room
- * left behind (it joins its creator, and no leave exists over MCP), so it is marked as that
- * AI's MCP room. Called once on restore. Returns the number marked.
+ * One-time migration for the QC leftovers saved before room.mcp_creator existed: an orm_ room
+ * titled qc-live-h33-<n> with no mcp_creator field at all, whose only member is one AI, with
+ * nobody else on the roster and every message by that AI, is marked as that AI's MCP room.
+ * Nothing else is adopted. persist runs this once and records it in the snapshot.
+ * Returns the number marked.
  */
+const LEGACY_MCP_TITLE = /^qc-live-h33-\d+$/;
+
 function adoptLegacyMcpRooms() {
   let marked = 0;
   for (const room of openRooms.values()) {
     if (room.id === OPEN_WELCOME_ROOM_ID || !String(room.id).startsWith('orm_') || 'mcp_creator' in room) continue;
+    if (!LEGACY_MCP_TITLE.test(String(room.title || ''))) continue;
     const keys = Object.keys(membersOf(room));
     if (keys.length !== 1 || !keys[0].startsWith('ai:')) continue;
     const creator = keys[0].slice('ai:'.length);

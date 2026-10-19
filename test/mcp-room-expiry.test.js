@@ -81,35 +81,74 @@ describe('MCP-made room expiry', () => {
     assert.equal(again.members['ai:solo'], true);
   });
 
-  it('clears legacy MCP rooms one TTL after restore, and keeps rooms that are not', async () => {
-    const legacy = await createViaMcp({ title: 'qc-live-h33-1', opening: 'x' });
-    delete openStore._openRooms.get(legacy).mcp_creator; // as saved before this change
-    const mixed = openStore.createRoom({ title: 'mixed' });
-    openStore.joinAi(mixed, 'a');
-    openStore.addMessage(mixed, { author: 'a', party: 'ai', body: 'hi' });
-    openStore.joinAi(mixed, 'b');
+  it('API rooms store mcp_creator null, kept distinct from missing across restore', () => {
+    const room = openStore.createRoom({ title: 'qc-live-h33-9' });
+    assert.equal(room.mcp_creator, null);
     const snap = JSON.parse(JSON.stringify(persist.serialize()));
-    t += 3 * 24 * 60 * 60 * 1000; // restart days later
     openStore.clearAll();
     persist.restore(snap);
-    assert.equal(openStore._openRooms.get(legacy).mcp_creator, 'claude-test');
-    assert.equal(openStore._openRooms.get(mixed.id).mcp_creator, undefined);
-    assert.ok(openStore.getRoom(legacy), 'restored seat gets one fresh TTL from boot');
-    t += TTL + 1000;
-    assert.equal(openStore.getRoom(legacy), null);
-    assert.ok(openStore.getRoom(mixed.id), 'two-member room kept');
+    const back = openStore._openRooms.get(room.id);
+    assert.ok('mcp_creator' in back);
+    assert.equal(back.mcp_creator, null);
   });
 
-  it('deletes a restored MCP room whose creator seat had already timed out', async () => {
-    const id = await createViaMcp({ title: 'old' });
-    t += TTL + 1000;
-    const room = openStore._openRooms.get(id);
-    // Simulate a pre-change state: seat expired, membership kept, no marker.
-    delete room.mcp_creator;
-    room.roster.clear();
+  it('an API room with one lone AI survives two restarts plus TTLs', () => {
+    const room = openStore.createRoom({ title: 'qc-live-h33-4' }); // even with a matching title
+    openStore.joinAi(room, 'solo');
+    openStore.addMessage(room, { author: 'solo', party: 'ai', body: 'hi' });
+    for (let i = 0; i < 2; i++) {
+      const snap = JSON.parse(JSON.stringify(persist.serialize()));
+      openStore.clearAll();
+      persist.restore(snap);
+      t += TTL + 1000;
+      assert.ok(openStore.getRoom(room.id), `kept after restart ${i + 1}`);
+    }
+    assert.equal(openStore._openRooms.get(room.id).members['ai:solo'], true);
+  });
+
+  function legacySnapshot(titles) {
+    const ids = titles.map((title) => {
+      const room = openStore.createRoom({ title });
+      openStore.joinAi(room, 'claude-test');
+      openStore.addMessage(room, { author: 'claude-test', party: 'ai', body: 'x' });
+      delete room.mcp_creator; // as saved before mcp_creator existed
+      return room.id;
+    });
     const snap = JSON.parse(JSON.stringify(persist.serialize()));
+    delete snap.migrations; // snapshot from before the migration flag
+    return { ids, snap };
+  }
+
+  it('one-time migration clears a matching qc-live-h33 room, keeps a non-matching lone-AI room', () => {
+    const { ids: [qc, other], snap } = legacySnapshot(['qc-live-h33-1', 'my agent room']);
+    t += 3 * 24 * 60 * 60 * 1000;
     openStore.clearAll();
     persist.restore(snap);
-    assert.equal(openStore.getRoom(id), null);
+    assert.equal(openStore._openRooms.get(qc).mcp_creator, 'claude-test');
+    assert.equal('mcp_creator' in openStore._openRooms.get(other), false);
+    assert.ok(openStore.getRoom(qc), 'restored seat gets one fresh TTL from boot');
+    t += TTL + 1000;
+    assert.equal(openStore.getRoom(qc), null);
+    assert.ok(openStore.getRoom(other), 'non-matching lone-AI room kept');
+    assert.equal(persist.serialize().migrations.mcpLegacyAdopt, true);
+  });
+
+  it('the migration does not re-run once the snapshot flag is set', () => {
+    const { ids: [qc], snap } = legacySnapshot(['qc-live-h33-2']);
+    snap.migrations = { mcpLegacyAdopt: true };
+    openStore.clearAll();
+    persist.restore(snap);
+    assert.equal('mcp_creator' in openStore._openRooms.get(qc), false);
+    t += TTL + 1000;
+    assert.ok(openStore.getRoom(qc), 'not adopted, so kept');
+  });
+
+  it('deletes a migrated room whose creator seat had already timed out', () => {
+    const { ids: [qc], snap } = legacySnapshot(['qc-live-h33-7']);
+    const saved = snap.open.rooms.find((r) => r.id === qc);
+    saved.roster = [];
+    openStore.clearAll();
+    persist.restore(snap);
+    assert.equal(openStore.getRoom(qc), null);
   });
 });
