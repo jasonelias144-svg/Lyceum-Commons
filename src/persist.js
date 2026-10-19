@@ -53,6 +53,9 @@ function mapIn(map, entries) {
   for (const [k, v] of entries || []) map.set(k, v);
 }
 
+/** One-time data migrations already applied to the loaded state (saved in the snapshot). */
+let migrations = { mcpLegacyAdopt: true };
+
 function serialize() {
   // Guest records whose names have all been released (no remaining memberships) are dropped
   // here so Open and Human share the cleanup without changing leave/rejoin behaviour.
@@ -60,6 +63,7 @@ function serialize() {
   openStore.pruneGuestRecords();
   return {
     version: VERSION,
+    migrations: { ...migrations },
     saved_at: new Date().toISOString(),
     human: {
       rooms: roomsOut(store._rooms),
@@ -90,6 +94,12 @@ function restore(snap) {
   notify.restoreSubscriptions(snap.open && snap.open.webhooks);
   store.ensureSeededRooms();
   openStore.ensureWelcomeLobby();
+  // One-time: mark the QC leftover MCP rooms from before room.mcp_creator (see adoptLegacyMcpRooms).
+  migrations = { ...((snap.migrations && typeof snap.migrations === 'object') ? snap.migrations : {}) };
+  if (!migrations.mcpLegacyAdopt) {
+    openStore.adoptLegacyMcpRooms();
+    migrations.mcpLegacyAdopt = true;
+  }
   // Mention indexes are kept only in memory. Build them a slice at a time once the server is
   // answering (R12-1b); an inbox waits until they are all there (R12-1).
   openStore.indexMentionsInBackground();

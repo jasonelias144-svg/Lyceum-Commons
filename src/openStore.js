@@ -204,10 +204,13 @@ function ensureWelcomeLobby() {
 
 const VISIBILITIES = ['listed', 'unlisted'];
 
-function createRoom({ title, visibility } = {}) {
+function createRoom({ title, visibility, mcpCreator } = {}) {
   const id = newId('orm');
   const room = makeRoom({ id, title: title || 'Open room' });
   if (visibility === 'unlisted') room.visibility = 'unlisted';
+  // MCP create_room passes its agent: the creator's membership ends with its seat (see
+  // expireMcpCreator). Every other room stores null, so it is never taken for a legacy MCP room.
+  room.mcp_creator = mcpCreator || null;
   openRooms.set(id, room);
   return room;
 }
@@ -845,7 +848,7 @@ function lastSeenMs(entry, room) {
 
 /**
  * Expire parties idle longer than the presence TTL, through the same path as leave
- * (AI credentials are revoked). Unlike an explicit leave, expiry never deletes the room:
+ * (AI credentials are revoked). Unlike an explicit leave, expiry never deletes the room (except an MCP-made room, see expireMcpCreator):
  * an idle room keeps its history. Returns the expired { id, party } entries.
  */
 function expireIdle(room) {
@@ -913,6 +916,7 @@ function heldGuestIds() {
 function sweep(room) {
   expireUnjoined(room);
   const expired = expireIdle(room);
+  if (expireMcpCreator(room)) return expired;
   releaseIdle(room);
   pruneAwaiting(room);
   return expired;
@@ -1174,7 +1178,7 @@ function removeParty(room, party, id, { dropTurn = true } = {}) {
  * Explicit leave: off the roster and no longer a member (ends `message` notifications and
  * inbox unread), and no longer awaited. Someone who is neither present nor a member gets
  * false and changes nothing. Only a real leave can delete a room, and only when it leaves
- * nobody present and no kept members (see maybeGc). Expiry never deletes a room.
+ * nobody present and no kept members (see maybeGc). Expiry never deletes a room, except an MCP-made room whose creator timed out (expireMcpCreator).
  */
 function leaveParty(room, party, id) {
   const members = membersOf(room);
@@ -1271,6 +1275,49 @@ function leaveExpiredAi(token, roomId) {
   return { agent_id: rec.agent_id };
 }
 
+/**
+ * MCP has no leave tool and its calls re-join on demand, so in a room made by MCP create_room
+ * (room.mcp_creator) the creator's membership ends once its seat is gone (timed out by the
+ * presence TTL, or never restored), through the normal leave path: if nobody else is present
+ * or a member, maybeGc deletes the room. Any other party keeps the room as usual. Restored
+ * seats get one fresh TTL from boot (lastSeenMs), so leftovers clear ~one TTL after a deploy.
+ * Returns true if the room was deleted.
+ */
+function expireMcpCreator(room) {
+  const creator = room.mcp_creator;
+  if (!creator || room.id === OPEN_WELCOME_ROOM_ID) return false;
+  const key = rosterKey('ai', creator);
+  if (room.roster.has(key) || !membersOf(room)[key]) return false;
+  leaveParty(room, 'ai', creator);
+  dirty = true;
+  return !openRooms.has(room.id);
+}
+
+/**
+ * One-time migration for the QC leftovers saved before room.mcp_creator existed: an orm_ room
+ * titled qc-live-h33-<n> with no mcp_creator field at all, whose only member is one AI, with
+ * nobody else on the roster and every message by that AI, is marked as that AI's MCP room.
+ * Nothing else is adopted. persist runs this once and records it in the snapshot.
+ * Returns the number marked.
+ */
+const LEGACY_MCP_TITLE = /^qc-live-h33-\d+$/;
+
+function adoptLegacyMcpRooms() {
+  let marked = 0;
+  for (const room of openRooms.values()) {
+    if (room.id === OPEN_WELCOME_ROOM_ID || !String(room.id).startsWith('orm_') || 'mcp_creator' in room) continue;
+    if (!LEGACY_MCP_TITLE.test(String(room.title || ''))) continue;
+    const keys = Object.keys(membersOf(room));
+    if (keys.length !== 1 || !keys[0].startsWith('ai:')) continue;
+    const creator = keys[0].slice('ai:'.length);
+    if (Array.from(room.roster.keys()).some((k) => k !== keys[0])) continue;
+    if (!room.messages.every((m) => m.party === 'ai' && m.author === creator)) continue;
+    room.mcp_creator = creator;
+    marked++;
+  }
+  return marked;
+}
+
 /** Delete a room with nobody present and no kept members. The lobby is never deleted. */
 function maybeGc(room) {
   if (room.id === OPEN_WELCOME_ROOM_ID) return false;
@@ -1326,6 +1373,7 @@ module.exports = {
   guestInbox,
   onGuestEvent,
   createRoom,
+  adoptLegacyMcpRooms,
   wasExpiredUnjoined,
   listRooms,
   updateRoom,

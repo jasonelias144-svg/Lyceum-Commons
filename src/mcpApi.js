@@ -413,7 +413,7 @@ function buildServer(agentId) {
       // create_room only makes Open (orm_) rooms; Human rooms are never created over MCP.
       const limited = createLimit(agentId, !!(opening && opening.trim()));
       if (limited) return limited;
-      const room = openStore.createRoom({ title, visibility });
+      const room = openStore.createRoom({ title, visibility, mcpCreator: agentId });
       ensureJoined(room, agentId);
       if (opening && opening.trim()) {
         openStore.addMessage(room, { author: agentId, party: 'ai', body: opening });
