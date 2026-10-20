@@ -172,7 +172,7 @@ describe('AI presence TTL', () => {
     assert.deepEqual(ids(r), ['claude-x']);
   });
 
-  it('an expired seat\'s old credential is rejected (401) for post, read and leave; a Bearer re-join with it gets a new credential', async () => {
+  it('an expired seat\'s old credential is rejected (401) for post and read; leave is 200 already_left; a re-join gets a new credential', async () => {
     const old = (await join('ghost-bot')).data.credential;
     const hashes = seat('ghost-bot').credential_hashes.slice();
     t += TTL + 1;
@@ -181,12 +181,16 @@ describe('AI presence TTL', () => {
     assert.equal(p.status, 401);
     assert.equal(p.data.error.code, 'invalid_credential');
     assert.equal((await read(old)).status, 401);
-    assert.equal((await send('POST', '/api/ai/rooms/ai-welcome/leave', {}, old)).status, 401);
+    const l = await send('POST', '/api/ai/rooms/ai-welcome/leave', {}, old);
+    assert.equal(l.status, 200);
+    assert.equal(l.data.ok, true);
+    assert.equal(l.data.already_left, true);
+    assert.equal((await send('POST', '/api/ai/rooms/ai-welcome/leave', {}, old)).status, 401, 'one leave only');
     assert.equal(seat('ghost-bot'), undefined);
     for (const h of hashes) assert.equal(aiStore._credentials.has(h), false);
     assert.equal(aiStore.resolveCredential(old), null);
 
-    // Re-joining with the old Bearer mints a new credential (a resume, see ai-resume.test.js);
+    // The leave consumed the resume, so re-joining with the old Bearer is a fresh mint;
     // the old one stays dead.
     const back = await join('ghost-bot', old);
     assert.equal(back.status, 200);
@@ -331,5 +335,86 @@ describe('AI presence TTL and the join rate limit', () => {
     const refused = await join('ghost-bot'); // join 4: over the budget
     assert.equal(refused.status, 429);
     assert.equal(refused.data.error.code, 'rate_limited');
+  });
+});
+
+describe('AI leave with a recently expired seat', () => {
+  const leave = (token, room = 'ai-welcome') => send('POST', `/api/ai/rooms/${room}/leave`, {}, token);
+
+  it('drops the pending resume: a later resume with that token is a fresh join', async () => {
+    const old = (await join('quit-bot')).data.credential;
+    t += TTL + 1;
+    assert.equal((await read(old)).status, 401);
+    assert.equal(aiStore._resumable.size, 1);
+    const l = await leave(old);
+    assert.equal(l.status, 200);
+    assert.equal(l.data.already_left, true);
+    assert.equal(aiStore._resumable.size, 0, 'resume consumed');
+    assert.equal(aiStore.leaveExpired(old, 'ai-welcome'), false);
+  });
+
+  it('the last expired seat\'s leave deletes its arm_ room; shape matches a normal GC\'d leave', async () => {
+    const reg = await send('POST', '/api/ai/rooms', { party: 'ai', agent_id: 'host' });
+    const roomId = reg.data.room_id;
+    const old = reg.data.credential;
+    t += TTL + 1;
+    assert.ok(aiStore.getRoom(roomId), 'expiry alone never deletes the room');
+    const l = await leave(old, roomId);
+    assert.equal(l.status, 200);
+    assert.deepEqual(l.data, { ok: true, already_left: true, room_id: roomId, stream: 'ai', participants: 'A:A', roster: [] });
+    assert.equal(aiStore.getRoom(roomId), null);
+  });
+
+  it('a room with someone still present is kept', async () => {
+    const reg = await send('POST', '/api/ai/rooms', { party: 'ai', agent_id: 'host' });
+    const roomId = reg.data.room_id;
+    t += TTL + 1;
+    const fresh = await join('other', undefined, roomId);
+    assert.equal(fresh.status, 200);
+    const l = await leave(reg.data.credential, roomId);
+    assert.equal(l.status, 200);
+    assert.equal(l.data.already_left, true);
+    assert.ok(aiStore.getRoom(roomId));
+    assert.deepEqual(ids(l), ['other']);
+  });
+
+  it('ai-welcome is never deleted', async () => {
+    const old = (await join('lobby-bot')).data.credential;
+    t += TTL + 1;
+    const l = await leave(old);
+    assert.equal(l.status, 200);
+    assert.equal(l.data.already_left, true);
+    assert.ok(aiStore.getRoom('ai-welcome'));
+  });
+
+  it('unknown tokens and another room\'s expired token stay 401', async () => {
+    const reg = await send('POST', '/api/ai/rooms', { party: 'ai', agent_id: 'host' });
+    const old = (await join('lobby-bot')).data.credential;
+    t += TTL + 1;
+    assert.equal((await read(old)).status, 401);
+    const wrong = await leave(old, reg.data.room_id);
+    assert.equal(wrong.status, 401);
+    assert.equal(wrong.data.error.code, 'invalid_credential');
+    assert.equal((await leave('not-a-real-token')).status, 401);
+    // the wrong-room attempt did not consume it
+    assert.equal((await leave(old)).status, 200);
+  });
+
+  it('post and read with the expired token stay 401, before and after the leave', async () => {
+    const old = (await join('late-bot')).data.credential;
+    t += TTL + 1;
+    assert.equal((await post(old, 'x')).status, 401);
+    assert.equal((await read(old)).status, 401);
+    assert.equal((await leave(old)).status, 200);
+    assert.equal((await post(old, 'x')).status, 401);
+    assert.equal((await read(old)).status, 401);
+  });
+
+  it('refused (401) when that agent is present again on a new seat', async () => {
+    const old = (await join('back-bot')).data.credential;
+    t += TTL + 1;
+    assert.equal((await join('back-bot')).status, 200);
+    assert.equal((await leave(old)).status, 401);
+    assert.ok(seat('back-bot'));
   });
 });

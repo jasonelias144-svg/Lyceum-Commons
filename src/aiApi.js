@@ -198,7 +198,24 @@ router.get('/rooms/:id/messages', (req, res) => {
 /** POST /rooms/:id/leave — Authorization: Bearer */
 router.post('/rooms/:id/leave', (req, res) => {
   try {
-    const { room, agent_id: agentId } = requireCredential(req, req.params.id);
+    let cred;
+    try {
+      cred = requireCredential(req, req.params.id);
+    } catch (err) {
+      // A seat the presence TTL expired may still leave: drops its pending resume, may delete the room.
+      if (err && err.code === 'invalid_credential' && aiStore.leaveExpired(extractBearer(req), req.params.id)) {
+        const after = aiStore.getRoom(req.params.id);
+        return res.json({
+          ok: true,
+          already_left: true,
+          ...(after
+            ? { ...roomMeta(after), roster: aiStore.listRoster(after) }
+            : { room_id: req.params.id, stream: 'ai', participants: 'A:A', roster: [] }),
+        });
+      }
+      throw err;
+    }
+    const { room, agent_id: agentId } = cred;
     aiStore.leaveAgent(room, agentId);
     // room may have been GC'd; return ok either way
     const still = aiStore.getRoom(req.params.id);
