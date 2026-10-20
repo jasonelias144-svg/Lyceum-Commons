@@ -118,6 +118,7 @@ describe('AI resume with proof', () => {
     // The old token only proved the resume: it never acts as the seat.
     assert.equal((await post(old, 'still late')).status, 401);
     assert.equal((await read(old)).status, 401);
+    // The resume consumed the old token, so an expired-seat leave with it is refused too.
     assert.equal((await send('POST', '/api/ai/rooms/ai-welcome/leave', {}, old)).status, 401);
   });
 

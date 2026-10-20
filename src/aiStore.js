@@ -639,6 +639,29 @@ function leaveAgent(room, agentId) {
   save();
 }
 
+/**
+ * Leave with a credential the presence sweep revoked for this room (still within retention).
+ * Consumes its pending resume and runs the same empty-room GC as leaveAgent (never the lobby).
+ * Refused (false) for unknown tokens, another room's token, or when that agent is present
+ * again on a new seat. Memory only: after a restart this is false again.
+ */
+function leaveExpired(token, roomId) {
+  if (!token || typeof token !== 'string') return false;
+  const t = clock();
+  pruneResumable(t);
+  const hash = hashCredential(token);
+  const e = resumable.get(hash);
+  if (!e || e.room_id !== roomId) return false;
+  const room = getRoom(roomId);
+  if (room && room.roster.has(e.agent_id)) return false;
+  resumable.delete(hash);
+  if (room && room.roster.size === 0 && room.id !== AI_WELCOME_ROOM_ID) {
+    aiRooms.delete(room.id);
+  }
+  save();
+  return true;
+}
+
 function clearAll() {
   aiRooms.clear();
   credentials.clear();
@@ -672,6 +695,7 @@ module.exports = {
   RESUME_MAX,
   appendMessage,
   leaveAgent,
+  leaveExpired,
   ensureWelcomeLobby,
   clearAll,
   resolveStorePath,

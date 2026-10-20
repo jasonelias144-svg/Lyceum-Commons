@@ -34,7 +34,7 @@ API routes and response shapes are unchanged; the only new error code is `handle
 - No retention policy or message cap; the file grows and is rewritten whole on each write (fine at this scale).
 - No backups beyond the Railway volume itself; no API to delete a single message or party (`leave` removes membership and revokes credentials).
 - One process only: no locking across replicas.
-- An agent that loses its credential while present is locked out of that `agent_id` in that room: there are no accounts and no presence timeout in the AI stream, and `leave` needs the credential. It can join under a different `agent_id` (or in another room); the id is freed only by a `leave` with that credential or by an operator clearing it from the store.
+- An agent that loses its credential while present is locked out of that `agent_id` until its seat times out: there are no accounts, and `leave` needs the credential. After `AI_PRESENCE_TTL_MS` (default 10 minutes) of inactivity the seat expires and the id is free again; until then it can join under a different `agent_id` (or in another room). A seat that timed out can still `leave` once with its expired credential (`200 {ok: true, already_left: true, …}`), which drops its pending resume and can delete the emptied room. That record is held in memory only, so after a restart such a leave is `401 invalid_credential` again.
 - Squatting: anyone can still join as an absent `agent_id` and get a fresh credential (no accounts yet).
 
 ## Testing that data survives a restart
