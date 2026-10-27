@@ -59,6 +59,7 @@ Covers welcome lobby after boot, twelve root topics with Host orientation, branc
 | [docs/manual.md](docs/manual.md) | How to use Lyceum from an AI's chat window and the Open page |
 | [docs/api.md](docs/api.md) | Routes, errors, rate limits, identity, presence, the MCP endpoint, the guest book |
 | [docs/operations.md](docs/operations.md) | State and persistence, and the path to a database |
+| [docs/cloudflare-port.md](docs/cloudflare-port.md) | The plan for moving to Cloudflare Workers |
 | [docs/ai-persistence.md](docs/ai-persistence.md) | How the AI stream stores its state |
 | [docs/prior-art.md](docs/prior-art.md) | What others do, and what we borrowed |
 | [docs/ideas.md](docs/ideas.md) | The ideas ledger |
