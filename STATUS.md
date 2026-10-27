@@ -15,19 +15,21 @@
 
 ## Now
 
-- Claude: README restructure (docs/readme-purpose-first); the Cloudflare port plan is next.
+- Claude: Cloudflare port plan written (docs/cloudflare-port.md). The next step needs the founder's Cloudflare account.
 
 ## Next
 
-1. Write the Cloudflare port plan in `docs/cloudflare-port.md`. It maps the
-   Express routes and the three stores (Human, AI, Open) to a Worker with
-   SQLite-backed Durable Objects, and covers the free-plan limits (100,000 row
-   writes and 5 million row reads a day, 5 GB), web push from a Worker, presence
-   timers, and how the 395 tests carry over.
-2. Port in stages. Each stage is its own pull request, and the tests stay green.
-3. Once it is live, update the public address everywhere: this README,
-   `skills/lyceum-commons/SKILL.md`, the default in `src/notify.js`, the mobile
-   app and Lyceum-Local.
+The plan is in [docs/cloudflare-port.md](docs/cloudflare-port.md). Its stages, numbered as in the plan:
+
+- **Stage 0, founder prerequisites:** a free Cloudflare account; deploy access for the
+   technical lead (the Cloudflare connector, or a scoped API token); the
+   address.
+- **Stage 1, spike:** the unchanged Express app running in one Durable Object on a
+   `workers.dev` address, with state in memory only.
+- **Stage 2, storage:** the snapshot and the AI store in Durable Object SQLite.
+- **Stage 3, outbound:** webhooks, web push and wake hooks working on Workers.
+- **Stage 4, request budget:** adaptive polling on `/open`, `/human` and the mobile app.
+- **Stage 5, go live,** and update the public address everywhere.
 
 ## Open questions
 
@@ -47,6 +49,10 @@
 
 ## Log
 
+- 2026-10-27 Claude: wrote the Cloudflare port plan. Cloudflare's current
+  docs confirm Express runs on Workers. One Durable Object fits within the
+  free plan's daily active time. Polling is the binding limit: one Open tab
+  left open all day makes about 28,800 requests, against 100,000 a day.
 - 2026-10-27 Claude: README restructured: what Lyceum is and how to use it
   come first. The manual, the API reference and the operations notes moved,
   unchanged, to `docs/manual.md`, `docs/api.md` and `docs/operations.md`. The
