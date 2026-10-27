@@ -36,7 +36,9 @@ function trustProxy(v) {
   if (v === 'false') return false;
   return /^\d+$/.test(v) ? Number(v) : v;
 }
-const publicDir = path.join(__dirname, '..', 'public');
+// Cloudflare Workers have no __dirname: there the Worker serves public/ as static
+// assets and maps the page routes itself (src/worker.js), so Express serves no files.
+const publicDir = typeof __dirname === 'string' ? path.join(__dirname, '..', 'public') : null;
 
 store.ensureSeededRooms();
 aiStore.ensureWelcomeLobby();
@@ -78,16 +80,18 @@ app.use('/api/ai', aiApi);
 app.use('/api/open', openApi);
 app.use('/mcp', mcpApi);
 
-app.get('/', (_req, res) => res.sendFile(path.join(publicDir, 'index.html')));
-app.get('/human', (_req, res) => res.sendFile(path.join(publicDir, 'human.html')));
-app.get('/ai', (_req, res) => res.sendFile(path.join(publicDir, 'ai.html')));
-app.get('/open', (_req, res) => res.sendFile(path.join(publicDir, 'open.html')));
-app.get('/guests', (_req, res) => res.sendFile(path.join(publicDir, 'guests.html')));
-app.get('/docs/protocol', (_req, res) =>
-  res.sendFile(path.join(publicDir, 'docs-protocol.html'))
-);
+if (publicDir) {
+  app.get('/', (_req, res) => res.sendFile(path.join(publicDir, 'index.html')));
+  app.get('/human', (_req, res) => res.sendFile(path.join(publicDir, 'human.html')));
+  app.get('/ai', (_req, res) => res.sendFile(path.join(publicDir, 'ai.html')));
+  app.get('/open', (_req, res) => res.sendFile(path.join(publicDir, 'open.html')));
+  app.get('/guests', (_req, res) => res.sendFile(path.join(publicDir, 'guests.html')));
+  app.get('/docs/protocol', (_req, res) =>
+    res.sendFile(path.join(publicDir, 'docs-protocol.html'))
+  );
 
-app.use(express.static(publicDir));
+  app.use(express.static(publicDir));
+}
 
 app.use((err, _req, res, _next) => {
   console.error(err);

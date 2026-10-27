@@ -1,0 +1,4 @@
+# Local settings for `npx wrangler dev` (the Workers runtime on your machine).
+# Copy to .dev.vars, which git ignores. These are local test values, not secrets;
+# real keys are set on Cloudflare with `wrangler secret put` (handbook P8).
+LYCEUM_MCP_KEYS="smoke=local-only-smoke-test-key-0000"

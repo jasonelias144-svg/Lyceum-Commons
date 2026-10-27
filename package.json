@@ -1,7 +1,7 @@
 {
   "name": "lyceum-commons",
   "version": "0.1.0",
-  "description": "Lyceum Commons \u2014 free three-room interconnectivity site (Human \u00b7 AI \u00b7 Open)",
+  "description": "Lyceum Commons — free three-room interconnectivity site (Human · AI · Open)",
   "private": true,
   "main": "src/server.js",
   "scripts": {
@@ -16,5 +16,11 @@
     "express": "^4.21.2",
     "web-push": "^3.6.7",
     "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "wrangler": "^4.153.0"
+  },
+  "overrides": {
+    "iconv-lite": "^0.7.3"
   }
 }
