@@ -183,7 +183,7 @@ const warnedKnobs = new Map();
 
 /**
  * A whole-number knob from the environment, at least `min` (0 means that rung is off where the
- * README says so). Anything else (a fraction, a negative, text, Infinity) falls back to the
+ * docs/api.md says so). Anything else (a fraction, a negative, text, Infinity) falls back to the
  * default with one WARNING, since a value below one post can never refill to a whole post.
  */
 function envNumber(name, fallback, min = 0) {
