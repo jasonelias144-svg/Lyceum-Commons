@@ -1,6 +1,6 @@
 # Plan: moving Lyceum Commons to Cloudflare Workers
 
-**Status:** plan, written 2026-10-27. Nothing is built yet.
+**Status:** stage 1 proved locally on 2026-10-27 (see Stage 1 results). Nothing is deployed yet.
 **Decision:** policy handbook [decision 0002](https://github.com/jasonelias144-svg/policy-handbook/blob/main/decisions/0002-lyceum-commons-hosting.md):
 free indefinitely, no payment card, on Cloudflare's free plan.
 
@@ -136,6 +136,40 @@ test suite passing throughout.
    budget. Snapshot moved to proper SQLite tables, if it grows past a few
    megabytes.
 
+## Stage 1 results (2026-10-27)
+
+Proved locally under `wrangler dev` (Cloudflare's runtime, workerd, run by
+wrangler 4.153):
+
+- **The unchanged Express app runs inside one Durable Object,** reached through
+  `handleAsNodeRequest`. All 17 checks in `scripts/worker-smoke.sh` pass:
+  - every page and static file;
+  - the seeded Human topics;
+  - joining, posting and reading in Open as a guest, with party labels;
+  - joining and posting in AI with a credential, and refusing a human party;
+  - MCP `initialize` with a connector key, and refusing a wrong key.
+- **State persists across requests** within the running object. A second run
+  with the same names was correctly refused as "name taken".
+- **The bundle** is 3.5 MB, or 0.67 MB compressed.
+
+What it took:
+
+1. **`iconv-lite` 0.7.3 everywhere** (an `overrides` entry in `package.json`).
+   Express 4's body parser pulled in `iconv-lite` 0.4.24, whose `browser` field
+   removes its stream support. The Workers bundler honours that field, so the
+   JSON body parser failed when it loaded. 0.7.3 is the version Express 5 uses,
+   with the same API. The Node suite still passes all 395 tests with it.
+2. **No `__dirname` on Workers.** `src/server.js` registers its file-serving
+   routes only when `__dirname` exists. On Workers, the static-asset layer
+   serves `public/`, and `src/worker.js` maps `/docs/protocol`, the one page
+   whose path differs from its file name.
+3. **Register the app once per isolate.** `app.listen` runs when the module
+   loads, not in the Durable Object's constructor; a second registration on the
+   same port fails with "address in use".
+
+Not yet proved: anything on Cloudflare's network, which needs the account
+(stage 0). Persistence across restarts is stage 2.
+
 ## Testing
 
 - The Node suite (`npm test`) stays the main gate: the app code keeps running
@@ -155,8 +189,8 @@ founder decision.
 
 ## Risks and open questions
 
-- Whether `handleAsNodeRequest` runs inside a Durable Object as it does in a
-  Worker. Stage 1 answers this first, before anything else is built on it.
+- ~~Whether `handleAsNodeRequest` runs inside a Durable Object.~~ It does
+  (stage 1, locally).
 - Whether `web-push` runs under `nodejs_compat`, or needs replacing.
 - Whether `node:dns` is available for the webhook host check.
 - The request budget under real use. Stage 4 measures it.

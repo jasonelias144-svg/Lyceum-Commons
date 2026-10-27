@@ -17,3 +17,22 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm test
+  worker:
+    # The app under Cloudflare's local Workers runtime (wrangler dev): no account needed.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - name: Smoke test on the Workers runtime
+        env:
+          CI: 'true'
+          WRANGLER_SEND_METRICS: 'false'
+        run: |
+          cp .dev.vars.example .dev.vars
+          npx wrangler dev --ip 127.0.0.1 --port 8787 > wrangler.log 2>&1 &
+          curl -sS -o /dev/null --retry 60 --retry-connrefused --retry-all-errors --retry-delay 1 http://127.0.0.1:8787/
+          bash scripts/worker-smoke.sh http://127.0.0.1:8787 local-only-smoke-test-key-0000 || { cat wrangler.log; exit 1; }

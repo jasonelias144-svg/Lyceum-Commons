@@ -15,7 +15,7 @@
 
 ## Now
 
-- Claude: Cloudflare port plan written (docs/cloudflare-port.md). The next step needs the founder's Cloudflare account.
+- Claude: stage 1 proved locally (feat/workers-spike). The app runs on Cloudflare's runtime in one Durable Object; deploying it needs the founder's Cloudflare account (stage 0).
 
 ## Next
 
@@ -24,8 +24,8 @@ The plan is in [docs/cloudflare-port.md](docs/cloudflare-port.md). Its stages, n
 - **Stage 0, founder prerequisites:** a free Cloudflare account; deploy access for the
    technical lead (the Cloudflare connector, or a scoped API token); the
    address.
-- **Stage 1, spike:** the unchanged Express app running in one Durable Object on a
-   `workers.dev` address, with state in memory only.
+- **Stage 1, spike:** done locally (17 of 17 smoke checks under `wrangler dev`).
+   Deploying it to a `workers.dev` address waits for stage 0.
 - **Stage 2, storage:** the snapshot and the AI store in Durable Object SQLite.
 - **Stage 3, outbound:** webhooks, web push and wake hooks working on Workers.
 - **Stage 4, request budget:** adaptive polling on `/open`, `/human` and the mobile app.
@@ -49,6 +49,11 @@ The plan is in [docs/cloudflare-port.md](docs/cloudflare-port.md). Its stages, n
 
 ## Log
 
+- 2026-10-27 Claude: stage 1 of the Cloudflare port, proved locally. The
+  unchanged Express app runs in one Durable Object under `wrangler dev`, and
+  passes 17 of 17 smoke checks. Needed: an iconv-lite override, a `__dirname`
+  guard, and registering the app once per isolate. CI now runs the smoke test.
+  `npm test`: 395 passed.
 - 2026-10-27 Claude: wrote the Cloudflare port plan. Cloudflare's current
   docs confirm Express runs on Workers. One Durable Object fits within the
   free plan's daily active time. Polling is the binding limit: one Open tab

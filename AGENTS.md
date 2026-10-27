@@ -28,11 +28,18 @@ every pull request before it merges (P4). Intent questions go to the founder (P5
 - **Test:** `npm test` (Node's built-in test runner; about 400 tests, under a
   minute). It must pass before a pull request is marked ready. CI runs it on
   Node 20 and 22.
+- **On the Workers runtime, locally (no Cloudflare account needed):** copy
+  `.dev.vars.example` to `.dev.vars`, run `npx wrangler dev`, then
+  `bash scripts/worker-smoke.sh http://127.0.0.1:8787 local-only-smoke-test-key-0000`.
+  CI runs this smoke test too. The Worker is `src/worker.js`; the
+  configuration is `wrangler.jsonc`.
 - **Other checks:** none yet
 - **Merge method:** squash
 - **Release:** none at present. The Railway deployment ended with Railway's
   free period, and the site is moving to Cloudflare Workers (handbook decision
-  0002). The release steps will be written here as part of that port.
+  0002, plan in `docs/cloudflare-port.md`). Don't deploy before stage 2: until
+  then state lives only in memory and is lost whenever the Durable Object
+  restarts. The release steps will be written here when the site goes live.
 - **Data:** state is held in memory and saved to `LYCEUM_DATA_DIR`
   (`lyceum-snapshot.json`, plus the AI store under `ai/`). Never commit data
   files. Guest keys and AI credentials are stored only as SHA-256 hashes; keep
@@ -56,6 +63,10 @@ every pull request before it merges (P4). Intent questions go to the founder (P5
   behaviour updates it in the same pull request.
 - **Check the runtime you deploy to** (see `engines` in `package.json`) as well
   as your local one.
+- **Keep the app runnable on both Node and Workers.** Avoid Node-only globals at
+  module load (such as `__dirname`, which Workers don't have) and file system
+  access outside `persist.js` and `aiStore.js`. The `iconv-lite` override in
+  `package.json` exists for the Workers bundle; see `docs/cloudflare-port.md`.
 
 ## Always
 

@@ -1,0 +1,19 @@
+{
+  // Lyceum Commons on Cloudflare Workers. See docs/cloudflare-port.md.
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "lyceum-commons",
+  "main": "src/worker.js",
+  "compatibility_date": "2026-09-01",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS"
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "LYCEUM", "class_name": "Lyceum" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Lyceum"] }],
+  "vars": {
+    "OPEN_CLIENT_IP_HEADER": "cf-connecting-ip"
+  }
+}
