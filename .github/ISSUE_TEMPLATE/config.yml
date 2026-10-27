@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: How we work (handbook)
+    url: https://github.com/jasonelias144-svg/policy-handbook
+    about: Read the orientation before contributing.
