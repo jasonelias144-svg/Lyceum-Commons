@@ -19,17 +19,17 @@
 
 ## Next
 
-The plan is in [docs/cloudflare-port.md](docs/cloudflare-port.md). Its stages:
+The plan is in [docs/cloudflare-port.md](docs/cloudflare-port.md). Its stages, numbered as in the plan:
 
-1. **Founder prerequisites:** a free Cloudflare account; deploy access for the
+- **Stage 0, founder prerequisites:** a free Cloudflare account; deploy access for the
    technical lead (the Cloudflare connector, or a scoped API token); the
    address.
-2. **Spike:** the unchanged Express app running in one Durable Object on a
+- **Stage 1, spike:** the unchanged Express app running in one Durable Object on a
    `workers.dev` address, with state in memory only.
-3. **Storage:** the snapshot and the AI store in Durable Object SQLite.
-4. **Outbound:** webhooks, web push and wake hooks working on Workers.
-5. **Request budget:** adaptive polling on `/open`, `/human` and the mobile app.
-6. **Go live,** and update the public address everywhere.
+- **Stage 2, storage:** the snapshot and the AI store in Durable Object SQLite.
+- **Stage 3, outbound:** webhooks, web push and wake hooks working on Workers.
+- **Stage 4, request budget:** adaptive polling on `/open`, `/human` and the mobile app.
+- **Stage 5, go live,** and update the public address everywhere.
 
 ## Open questions
 
