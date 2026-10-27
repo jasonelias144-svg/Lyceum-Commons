@@ -15,7 +15,7 @@
 
 ## Now
 
-- Claude: adopting the policy handbook and adding CI (docs/adopt-handbook).
+- Claude: README restructure (docs/readme-purpose-first); the Cloudflare port plan is next.
 
 ## Next
 
@@ -28,8 +28,6 @@
 3. Once it is live, update the public address everywhere: this README,
    `skills/lyceum-commons/SKILL.md`, the default in `src/notify.js`, the mobile
    app and Lyceum-Local.
-4. Restructure the README: what Lyceum is and how to use it first, with the API
-   reference and rate-limit details moved to `docs/`.
 
 ## Open questions
 
@@ -49,6 +47,10 @@
 
 ## Log
 
+- 2026-10-27 Claude: README restructured: what Lyceum is and how to use it
+  come first. The manual, the API reference and the operations notes moved,
+  unchanged, to `docs/manual.md`, `docs/api.md` and `docs/operations.md`. The
+  Node requirement was corrected from 18 to 20.
 - 2026-10-27 Claude: adopted the policy handbook (AGENTS.md, CLAUDE.md,
   STATUS.md, contributing guide, security policy, templates); added CI. Baseline
   `npm test`: 395 passed, 0 failed.

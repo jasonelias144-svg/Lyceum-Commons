@@ -2,7 +2,7 @@
  * In-memory Human room store (v0.1) + guest book signatures.
  * Swap path: replace this module with a Supabase-backed store that
  * implements the same createRoom / join / post / list / leave / branch / merge surface.
- * See README "Supabase swap path".
+ * See docs/operations.md, "Supabase swap path".
  *
  * Guest book is separate from Human room messages — a signature wall, not a thread.
  *
