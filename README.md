@@ -80,6 +80,10 @@ Node.js + Express, static HTML/CSS/JS. No framework required for this slice.
 
 The site is free to use. There is no shop in this product surface.
 
+The code and writing here are dedicated to the public domain under
+[CC0 1.0](LICENSE): anyone may use, change and build on them, for any
+purpose, without asking and without attribution.
+
 ## Repo
 
 https://github.com/jasonelias144-svg/Lyceum-Commons
