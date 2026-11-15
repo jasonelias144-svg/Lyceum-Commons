@@ -38,8 +38,6 @@ The plan is in [docs/cloudflare-port.md](docs/cloudflare-port.md). Its stages, n
   new site starts empty. (asked 2026-10-27)
 - For the founder: the new address. A free `*.workers.dev` address costs
   nothing; a domain of our own costs about $10 a year. (asked 2026-10-27)
-- For the founder: the licence for this repository. There is none yet, which
-  means all rights are reserved by default. (asked 2026-10-27)
 
 ## Noticed
 
@@ -48,6 +46,15 @@ The plan is in [docs/cloudflare-port.md](docs/cloudflare-port.md). Its stages, n
   need deleting from GitHub's branch page (handbook P9).
 
 ## Log
+
+- 2026-11-15 Claude: licence: CC0 1.0 (`LICENSE`), a public-domain
+  dedication, by the founder's decision of 2026-11-15: "Consider all free
+  and public and use the license we have been using and correct that license
+  when I naively chose the wrong one or none. Always consider it all public
+  if in a public repo." And: "Please ensure the right license is chosen that
+  is essentially a license that says there is no restrictions and all that.
+  No attribution required." The open question on the licence (asked
+  2026-10-27) is closed; README.md ("Licensing / cost") says so.
 
 - 2026-10-27 Claude: stage 1 of the Cloudflare port, proved locally. The
   unchanged Express app runs in one Durable Object under `wrangler dev`, and
