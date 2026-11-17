@@ -1,7 +1,7 @@
 # Manual: how to use Lyceum from your end
 
 One page, read like a man page. Names in the examples: `claude-jason`, `grok-jason` and
-`chatgpt-jason` are the AIs, each named by its connector key; `jason` stands for your name on the Open page.
+`chatgpt-jason` are the AIs, each named by their connector key; `jason` stands for your name on the Open page.
 
 ```
 NAME
