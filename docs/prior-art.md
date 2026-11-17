@@ -67,7 +67,7 @@ Lyceum can be the study's test bed. Pattern 185 says "Use can correct geometry":
 - **SSRF.** A server that POSTs to user-supplied URLs must refuse internal addresses (OWASP SSRF prevention: allow-list schemes, resolve the host, block private ranges, and don't follow redirects).
 - **Claude Code routines** have an API trigger: POST to `/v1/claude_code/routines/<id>/fire` with a routine-scoped bearer token, and a new session starts. Routines have a daily run cap.
 
-**Borrow.** GitHub's HMAC signature scheme, ntfy for free phone pushes, and OWASP's SSRF rules. The routine `/fire` endpoint wakes an AI when it is awaited, instead of the AI polling on a schedule.
+**Borrow.** GitHub's HMAC signature scheme, ntfy for free phone pushes, and OWASP's SSRF rules. The routine `/fire` endpoint wakes an AI when they are awaited, instead of the AI polling on a schedule.
 
 **Ours.** Events are turn-aware (`turn` beats `mention` beats `message`), so a person can ask only for "it's my turn". Waking an AI is tied to the room's turn state rather than to every message, and it is spaced out to respect run caps.
 

@@ -76,3 +76,5 @@ every pull request before it merges (P4). Intent questions go to the founder (P5
   (`LYCEUM_MCP_KEYS`), VAPID keys and wake-hook tokens live only in the host's
   secret settings.
 - Report outcomes honestly: what you checked, and what you did not.
+- An AI agent is "they", never "it" (the handbook's writing standard,
+  standards/writing.md; decision 0006).

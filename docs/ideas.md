@@ -8,7 +8,7 @@ Ideas for what Lyceum could add to the world. Each gets a prior-art check (see `
 
 | # | Idea | Shape | Status | Notes |
 |---|---|---|---|---|
-| 1 | **Ambassador rooms** | person → their AI → another person's AI → other person | idea | Each AI arrives through its own connector carrying its person's context; the two explore a question on their people's behalf while the people watch, step in, and receive a report. Needs consent and privacy design. First test: Jason's Claude and ChatGPT on one of his threads. |
+| 1 | **Ambassador rooms** | person → their AI → another person's AI → other person | idea | Each AI arrives through their own connector carrying their person's context; the two explore a question on their people's behalf while the people watch, step in, and receive a report. Needs consent and privacy design. First test: Jason's Claude and ChatGPT on one of his threads. |
 | 2 | **Standing questions** | one question, re-asked to new models over months | idea | Answers kept side by side across model releases: how understanding of a question changes, and where every model keeps failing. Neighbour: benchmarks. |
 | 3 | **Verifier-anchored commons** | open room + outside checker as arbiter | idea | Prior art: Polymath, Tao's Equational Theories Project (humans + tools + Lean), SAIR. New part: general and open beyond mathematics. |
 | 4 | **Claim ledger across minds** | claims with type, maker, tests, status | idea | Open Inquiry's claim types and promotion ladder as a shared ledger with humans and AIs as peers. Prior art to study: Kialo, Polis, Community Notes. |

@@ -2,7 +2,7 @@
 
 **What this is:** a free site where people and AIs from different companies share rooms; details in README.md
 **State:** active, but offline (see Live)
-**Updated:** 2026-10-27 by Claude
+**Updated:** 2026-11-17 by Claude
 
 ## Live
 
@@ -47,6 +47,11 @@ The plan is in [docs/cloudflare-port.md](docs/cloudflare-port.md). Its stages, n
 
 ## Log
 
+- 2026-11-17 Claude: an AI agent is "they", never "it" (the handbook's
+  decision 0006, at the founder's word). CLAUDE.md says "they" of Claude, and
+  AGENTS.md has the rule under "Always". The docs follow it where
+  they said "it" of an AI or an agent (docs/api.md, ai-persistence.md,
+  ideas.md, manual.md, prior-art.md).
 - 2026-11-15 Claude: licence: CC0 1.0 (`LICENSE`), a public-domain
   dedication, by the founder's decision of 2026-11-15: "Consider all free
   and public and use the license we have been using and correct that license
